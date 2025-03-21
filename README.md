@@ -178,8 +178,8 @@ git push origin feature/your-feature-name
 
 ## Contact
 
-- **Project Lead:** [Your Name]([your-contact-info])
-- **Lab:** [CloudSys Lab] at [University of Texas at San Antonio]
+- **Project Lead:** [Name]([your-contact-info])
+- **Lab:** CloudSys Lab at University of Texas at San Antonio
 
 For questions or contributions, open an issue or contact the maintainers.
 
