@@ -41,6 +41,7 @@ class MobileNetV2Shard1(ModelShardBase):
         super(MobileNetV2Shard1, self).__init__(device)
         
         # Create complete model then extract first half
+        #TODO add changes for pretrained models on pytorch library
         complete_model = MobileNetV2(num_classes=num_classes)
         
         # First shard includes the features up to halfway point
@@ -157,11 +158,11 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
     
     # Define RPC names for workers
     rpc_backend_options = rpc.TensorPipeRpcBackendOptions(
-        num_worker_threads=16,
+        num_worker_threads=16, #TODO is this per device or is it shared among all devices?
         rpc_timeout=0  # infinity
     )
     
-    if rank == 0:  # Master
+    if rank == 0:  # Master LAMBDA
         rpc.init_rpc(
             "master",
             rank=rank,
