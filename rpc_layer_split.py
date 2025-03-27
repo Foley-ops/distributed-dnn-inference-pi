@@ -110,14 +110,14 @@ class DistributedModel(nn.Module):
         self.p1_rref = rpc.remote(
             workers[0],
             Shard1,
-            args=("cuda:0", num_classes)
+            args=("cpu", num_classes)
         )
         
         # Put the second part of the model on workers[1]
         self.p2_rref = rpc.remote(
             workers[1],
             Shard2,
-            args=("cuda:1", num_classes)
+            args=("cpu", num_classes)
         )
     
     def forward(self, xs):
