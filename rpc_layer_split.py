@@ -277,6 +277,7 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
         logger.info(f"Initializing worker node with rank {rank}")
         retry_count = 0
         max_retries = 30  # More retries
+        connected = False
         
         while retry_count < max_retries and not connected:
             try:
