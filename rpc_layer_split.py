@@ -278,20 +278,19 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
         retry_count = 0
         max_retries = 30  # More retries
         
-        while retry_count < max_retries:
+        while retry_count < max_retries and not connected:
             try:
-                # Force workers to use WiFi interface
                 os.environ['GLOO_SOCKET_IFNAME'] = 'wlan0'
                 logger.info(f"Worker binding to interface: {os.environ.get('GLOO_SOCKET_IFNAME')}")
                 
-                # Check if RPC is already initialized, with hasattr check for safety
-                if hasattr(rpc, 'is_initialized') and rpc.is_initialized():
-                    logger.info("RPC is already initialized, skipping initialization")
-                    break
-                    
                 logger.info(f"Worker {rank} attempt {retry_count+1} to connect to master...")
                 
-                # Try to initialize RPC
+                # Check if RPC is already initialized; if so, skip reinitialization
+                if hasattr(rpc, 'is_initialized') and rpc.is_initialized():
+                    logger.info("RPC is already initialized; skipping reinitialization.")
+                    connected = True
+                    break
+                
                 rpc.init_rpc(
                     f"worker{rank}",
                     rank=rank,
@@ -299,25 +298,21 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
                     rpc_backend_options=rpc_backend_options
                 )
                 logger.info(f"Worker {rank} RPC initialized successfully")
-                break  # Successfully connected, exit the retry loop
-                
+                connected = True
             except Exception as e:
                 retry_count += 1
                 logger.warning(f"Connection attempt {retry_count} failed: {str(e)}")
-                
                 if retry_count >= max_retries:
                     logger.error(f"Worker {rank} failed to connect after {max_retries} attempts")
                     raise
-                    
-                # Randomize wait time slightly to avoid synchronization issues
-                wait_time = 10 + (retry_count % 5)  
+                wait_time = 10 + (retry_count % 5)
                 logger.info(f"Retrying in {wait_time} seconds... ({retry_count}/{max_retries})")
                 time.sleep(wait_time)
-    
-    # Block until all RPCs finish
-    logger.info("Waiting for RPC shutdown")
-    rpc.shutdown()
-    logger.info("RPC shutdown complete")
+            
+            # Block until all RPCs finish
+            logger.info("Waiting for RPC shutdown")
+            rpc.shutdown()
+            logger.info("RPC shutdown complete")
 
 def main():
     # Parse command line arguments
