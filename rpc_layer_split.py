@@ -17,15 +17,6 @@ from dotenv import load_dotenv
 from typing import List
 
 # -------------------------------------------------------------------
-# Explicit network configuration:
-# Set master IP and port; ensure MASTER_ADDR is reachable from workers.
-MASTER_IP = "10.100.117.1"       # Master node's enp6s0 IP.
-MASTER_PORT = "29555"            # Chosen port for RPC.
-
-os.environ["MASTER_ADDR"] = MASTER_IP
-os.environ["MASTER_PORT"] = MASTER_PORT
-
-# -------------------------------------------------------------------
 # Base class for model shards
 class ModelShardBase(nn.Module):
     def __init__(self, device):
@@ -154,10 +145,13 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
     logging.setLogRecordFactory(record_factory)
     logger = logging.getLogger(__name__)
     logger.info("Starting distributed inference process")
+    
+    # Load environment variables from .env file
     load_dotenv()
-
-    master_addr = os.getenv('MASTER_ADDR', MASTER_IP)
-    master_port = os.getenv('MASTER_PORT', MASTER_PORT)
+    
+    # Get master address and port from .env file
+    master_addr = os.getenv('MASTER_ADDR', 'localhost')
+    master_port = os.getenv('MASTER_PORT', '29555')
     logger.info(f"Using master address: {master_addr} and port: {master_port}")
 
     # Set environment variables
