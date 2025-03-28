@@ -274,36 +274,48 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
             logger.error(f"Error in master node: {str(e)}", exc_info=True)
             
     else:  # Workers
-        logger.info(f"Initializing worker node with rank {rank}")
-        retry_count = 0
-        max_retries = 30  # More retries
-        connected = False
-        
-        while retry_count < max_retries and not connected:
-            try:
-                # Force workers to use WiFi interface
-                os.environ['GLOO_SOCKET_IFNAME'] = 'wlan0'
-                logger.info(f"Worker binding to interface: {os.environ.get('GLOO_SOCKET_IFNAME')}")
-                
-                logger.info(f"Worker {rank} attempt {retry_count+1} to connect to master...")
-                rpc.init_rpc(
-                    f"worker{rank}",
-                    rank=rank,
-                    world_size=world_size,
-                    rpc_backend_options=rpc_backend_options
-                )
-                logger.info(f"Worker {rank} RPC initialized successfully")
-                connected = True
-            except Exception as e:
-                retry_count += 1
-                logger.warning(f"Connection attempt {retry_count} failed: {str(e)}")
-                if retry_count >= max_retries:
-                    logger.error(f"Worker {rank} failed to connect after {max_retries} attempts")
-                    raise
-                # Randomize wait time slightly to avoid synchronization issues
-                wait_time = 10 + (retry_count % 5)  
-                logger.info(f"Retrying in {wait_time} seconds... ({retry_count}/{max_retries})")
-                time.sleep(wait_time)
+    logger.info(f"Initializing worker node with rank {rank}")
+    retry_count = 0
+    max_retries = 30  # More retries
+    connected = False
+    
+    while retry_count < max_retries and not connected:
+        try:
+            # Force workers to use WiFi interface
+            os.environ['GLOO_SOCKET_IFNAME'] = 'wlan0'
+            logger.info(f"Worker binding to interface: {os.environ.get('GLOO_SOCKET_IFNAME')}")
+            
+            logger.info(f"Worker {rank} attempt {retry_count+1} to connect to master...")
+            
+            # Make sure RPC is not already initialized
+            if rpc.is_initialized():
+                logger.info("RPC was already initialized. Shutting down before retry.")
+                try:
+                    rpc.shutdown()
+                except Exception as shutdown_err:
+                    logger.warning(f"Error during shutdown: {str(shutdown_err)}")
+                    # Wait a bit to allow resources to be released
+                    time.sleep(5)
+            
+            # Try to initialize RPC
+            rpc.init_rpc(
+                f"worker{rank}",
+                rank=rank,
+                world_size=world_size,
+                rpc_backend_options=rpc_backend_options
+            )
+            logger.info(f"Worker {rank} RPC initialized successfully")
+            connected = True
+        except Exception as e:
+            retry_count += 1
+            logger.warning(f"Connection attempt {retry_count} failed: {str(e)}")
+            if retry_count >= max_retries:
+                logger.error(f"Worker {rank} failed to connect after {max_retries} attempts")
+                raise
+            # Randomize wait time slightly to avoid synchronization issues
+            wait_time = 10 + (retry_count % 5)  
+            logger.info(f"Retrying in {wait_time} seconds... ({retry_count}/{max_retries})")
+            time.sleep(wait_time)
     
     # Block until all RPCs finish
     logger.info("Waiting for RPC shutdown")
