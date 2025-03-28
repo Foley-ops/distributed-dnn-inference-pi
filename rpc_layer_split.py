@@ -169,30 +169,29 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
     # Load environment variables
     load_dotenv()
     
-    # Get master address and port from .env file
+    # Get master address from .env file
     master_addr = os.getenv('MASTER_ADDR', 'localhost')
     master_port = os.getenv('MASTER_PORT', '29555')
+    
     logger.info(f"Using master address: {master_addr} and port: {master_port}")
     
-    # Set environment variables for RPC
+    # Initialize RPC framework
     os.environ['MASTER_ADDR'] = master_addr
     os.environ['MASTER_PORT'] = master_port
     
-    # Set network interface for GLOO and TensorPipe
-    if rank == 0:  # Master node
-        os.environ['GLOO_SOCKET_IFNAME'] = 'enp6s0'
-        os.environ['TP_SOCKET_IFNAME'] = 'enp6s0'
-        logger.info("Set GLOO_SOCKET_IFNAME and TP_SOCKET_IFNAME to enp6s0 for master")
-    else:  # Worker nodes
-        os.environ['GLOO_SOCKET_IFNAME'] = 'wlan0'
-        os.environ['TP_SOCKET_IFNAME'] = 'wlan0'
-        logger.info("Set GLOO_SOCKET_IFNAME and TP_SOCKET_IFNAME to wlan0 for worker")
+    if rank == 0:  # Only on master node
+        # Specify the interface with the master node IP address
+        os.environ['GLOO_SOCKET_IFNAME'] = 'enp6s0'  # Using your wired interface
+        logger.info(f"Set GLOO_SOCKET_IFNAME to enp6s0 for binding")
+    else:  # Only on worker nodes
+        # For WiFi connections on Raspberry Pis
+        os.environ['GLOO_SOCKET_IFNAME'] = 'wlan0'  # Typical WiFi interface name on Pis
+        logger.info(f"Set GLOO_SOCKET_IFNAME to bind to WiFi interface")
     
-    # Define RPC backend options with _transports to disable shared-memory transport
+    # Define RPC names for workers
     rpc_backend_options = rpc.TensorPipeRpcBackendOptions(
         num_worker_threads=4,
-        rpc_timeout=120,  # 2 minute timeout
-        _transports=["uv"]
+        rpc_timeout=120  # 2 minute timeout
     )
     
     # Flag to track if RPC was successfully initialized
@@ -201,6 +200,7 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
     if rank == 0:  # Master node
         logger.info("Initializing master node")
         try:
+            # Initialize RPC for master
             rpc.init_rpc(
                 "master",
                 rank=rank,
@@ -209,23 +209,27 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
             )
             logger.info("Master RPC initialized successfully")
             rpc_initialized = True
+            
             # Rest of master code...
+            
         except Exception as e:
             logger.error(f"Error in master node: {str(e)}", exc_info=True)
-    else:  # Worker nodes
+            
+    else:  # Workers
         logger.info(f"Initializing worker node with rank {rank}")
         retry_count = 0
-        max_retries = 30
+        max_retries = 30  # More retries
         connected = False
         
         while retry_count < max_retries and not connected:
             try:
                 # Force workers to use WiFi interface
                 os.environ['GLOO_SOCKET_IFNAME'] = 'wlan0'
-                os.environ['TP_SOCKET_IFNAME'] = 'wlan0'
                 logger.info(f"Worker binding to interface: {os.environ.get('GLOO_SOCKET_IFNAME')}")
+                
                 logger.info(f"Worker {rank} attempt {retry_count+1} to connect to master...")
                 
+                # Check if RPC is already initialized; if so, skip reinitialization
                 if hasattr(rpc, 'is_initialized') and rpc.is_initialized():
                     logger.info("RPC is already initialized; skipping reinitialization.")
                     connected = True
@@ -241,16 +245,18 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
                 logger.info(f"Worker {rank} RPC initialized successfully")
                 connected = True
                 rpc_initialized = True
+                
             except Exception as e:
                 retry_count += 1
                 logger.warning(f"Connection attempt {retry_count} failed: {str(e)}")
                 if retry_count >= max_retries:
                     logger.error(f"Worker {rank} failed to connect after {max_retries} attempts")
-                    break
+                    break  # Exit the loop instead of raising
                 wait_time = 10 + (retry_count % 5)
                 logger.info(f"Retrying in {wait_time} seconds... ({retry_count}/{max_retries})")
                 time.sleep(wait_time)
     
+    # Only call shutdown if RPC was successfully initialized
     if rpc_initialized:
         logger.info("Waiting for RPC shutdown")
         try:
@@ -260,7 +266,6 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
             logger.error(f"Error during shutdown: {str(e)}")
     else:
         logger.warning("RPC was never successfully initialized, skipping shutdown")
-
 
 def main():
     # Parse command line arguments
