@@ -54,7 +54,9 @@ class MobileNetV2Shard1(ModelShardBase):
     def forward(self, x_rref):
         logging.info(f"MobileNetV2Shard1: Received input tensor with shape {x_rref.to_here().shape}")
         x = x_rref.to_here().to(self.device)
+        logging.info(f"MobileNetV2Shard1: Starting computation...")
         output = self.features_first_half(x)
+        logging.info(f"MobileNetV2Shard1: Computation complete")
         logging.info(f"MobileNetV2Shard1: Produced output tensor with shape {output.shape}")
         return output.cpu()
 
@@ -73,10 +75,12 @@ class MobileNetV2Shard2(ModelShardBase):
     def forward(self, x_rref):
         logging.info(f"MobileNetV2Shard2: Received input tensor with shape {x_rref.to_here().shape}")
         x = x_rref.to_here().to(self.device)
+        logging.info(f"MobileNetV2Shard2: Starting computation...")
         x = self.features_second_half(x)
         x = nn.functional.adaptive_avg_pool2d(x, (1, 1))
         x = torch.flatten(x, 1)
         x = self.classifier(x)
+        logging.info(f"MobileNetV2Shard2: Computation complete")
         logging.info(f"MobileNetV2Shard2: Produced output tensor with shape {x.shape}")
         return x.cpu()
 
@@ -159,7 +163,7 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
     # Configure network interfaces for RPC.
     options = TensorPipeRpcBackendOptions(
         num_worker_threads=4,
-        rpc_timeout=120,
+        rpc_timeout=300,  # Increase to 5 minutes
         init_method=f"tcp://{master_addr}:{master_port}"
     )
 
@@ -256,8 +260,8 @@ def main():
     parser.add_argument("--rank", type=int, default=0, help="Rank of current process")
     parser.add_argument("--world-size", type=int, default=3, help="World size (1 master + N workers)")
     parser.add_argument("--model", type=str, default="mobilenetv2", choices=["mobilenetv2"], help="Model architecture")
-    parser.add_argument("--batch-size", type=int, default=8, help="Batch size")
-    parser.add_argument("--micro-batches", type=int, default=2, help="Number of micro-batches for pipeline")
+    parser.add_argument("--batch-size", type=int, default=4, help="Batch size")  # Reduced from 8
+    parser.add_argument("--micro-batches", type=int, default=1, help="Number of micro-batches for pipeline")  # Reduced from 2
     parser.add_argument("--num-classes", type=int, default=10, help="Number of output classes")
     parser.add_argument("--dataset", type=str, default="cifar10", choices=["cifar10", "dummy"], help="Dataset to use for inference")
     args = parser.parse_args()
