@@ -17,15 +17,6 @@ from dotenv import load_dotenv
 from typing import List
 
 # -------------------------------------------------------------------
-# Explicit network configuration:
-# Set master IP and port; ensure MASTER_ADDR is reachable from workers.
-MASTER_IP = "10.100.117.1"       # Master node's enp6s0 IP.
-MASTER_PORT = "29555"            # Chosen port for RPC.
-
-os.environ["MASTER_ADDR"] = MASTER_IP
-os.environ["MASTER_PORT"] = MASTER_PORT
-
-# -------------------------------------------------------------------
 # Base class for model shards
 class ModelShardBase(nn.Module):
     def __init__(self, device):
@@ -160,22 +151,27 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
     master_port = os.getenv('MASTER_PORT', MASTER_PORT)
     logger.info(f"Using master address: {master_addr} and port: {master_port}")
 
-    # Configure network interfaces for RPC.
-    options = TensorPipeRpcBackendOptions(
-        num_worker_threads=4,
-        rpc_timeout=300,  # Increase to 5 minutes
-        init_method=f"tcp://{master_addr}:{master_port}"
-    )
+    # Set environment variables
+    os.environ['MASTER_ADDR'] = master_addr
+    os.environ['MASTER_PORT'] = master_port
 
+    # Configure network interfaces for proper binding
     if rank == 0:
         os.environ['GLOO_SOCKET_IFNAME'] = 'enp6s0'
-        os.environ['TP_SOCKET_IFNAME']   = 'enp6s0'
+        os.environ['TP_SOCKET_IFNAME'] = 'enp6s0'
         logger.info("Master using interface enp6s0 for binding")
     else:
         os.environ['GLOO_SOCKET_IFNAME'] = 'wlan0'
-        os.environ['TP_SOCKET_IFNAME']   = 'wlan0'
+        os.environ['TP_SOCKET_IFNAME'] = 'wlan0'
         logger.info("Worker binding to interface wlan0")
 
+    # Configure RPC options
+    options = rpc.TensorPipeRpcBackendOptions(
+        num_worker_threads=4,
+        rpc_timeout=300  # Increased timeout to 5 minutes
+    )
+    
+    # Initialize RPC with retries
     rpc_initialized = init_rpc_with_retries(
         name="master" if rank == 0 else f"worker{rank}",
         rank=rank,
@@ -183,10 +179,12 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
         options=options,
         max_retries=3
     )
+    
     if not rpc_initialized:
         logger.error(f"[Rank {rank}] RPC initialization failed after multiple attempts")
         sys.exit(1)
 
+    # Rest of the function remains the same
     if rank == 0:  # Master node
         logger.info("Initializing master node")
         workers = [f"worker{i}" for i in range(1, world_size)]
