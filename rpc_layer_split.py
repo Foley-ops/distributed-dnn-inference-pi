@@ -1,28 +1,22 @@
 #!/usr/bin/env python3
 
-# Disable PyTorch's SIMD optimization for Raspberry Pi compatibility
+# Disable PyTorch's advanced CPU optimizations for Raspberry Pi compatibility
 import os
 os.environ['ATEN_CPU_CAPABILITY'] = ''
 
-import os
 import time
-import logging
-import socket
 import torch
 import torch.nn as nn
 import torch.distributed.rpc as rpc
 from torch.distributed.rpc import RRef
-import torch.optim as optim
-import torch.distributed.autograd as dist_autograd
-from torch.distributed.optim import DistributedOptimizer
 import torchvision.datasets as datasets
 import torchvision.transforms as transforms
+import torchvision.models as torchvision_models
 from dotenv import load_dotenv
 import argparse
-from typing import List, Tuple, Dict, Optional
-
-# Use only available lightweight models; remove unavailable ones like SqueezeNet.
-import torchvision.models as torchvision_models
+import logging
+import socket
+from typing import List
 
 # Configure logging
 logging.basicConfig(
@@ -35,10 +29,10 @@ class ModelShardBase(nn.Module):
     def __init__(self, device):
         super(ModelShardBase, self).__init__()
         self.device = device
-
+    
     def forward(self, x_rref):
         raise NotImplementedError("Subclasses must implement forward method")
-
+    
     def parameter_rrefs(self):
         param_rrefs = []
         for param in self.parameters():
@@ -49,11 +43,17 @@ class ModelShardBase(nn.Module):
 class MobileNetV2Shard1(ModelShardBase):
     def __init__(self, device, num_classes=10):
         super(MobileNetV2Shard1, self).__init__(device)
+        
+        # Use torchvision's MobileNetV2
         complete_model = torchvision_models.mobilenet_v2(num_classes=num_classes)
+        
+        # First shard includes the features up to halfway point
         features = complete_model.features
         split_idx = len(features) // 2
-        self.features_first_half = nn.Sequential(*list(features.children())[:split_idx]).to(self.device)
         
+        self.features_first_half = nn.Sequential(*list(features.children())[:split_idx])
+        self.features_first_half.to(self.device)
+    
     def forward(self, x_rref):
         logging.info(f"MobileNetV2Shard1: Received input tensor with shape {x_rref.to_here().shape}")
         x = x_rref.to_here().to(self.device)
@@ -66,11 +66,19 @@ class MobileNetV2Shard1(ModelShardBase):
 class MobileNetV2Shard2(ModelShardBase):
     def __init__(self, device, num_classes=10):
         super(MobileNetV2Shard2, self).__init__(device)
+        
+        # Use torchvision's MobileNetV2
         complete_model = torchvision_models.mobilenet_v2(num_classes=num_classes)
+        
+        # Extract the second half of features and the classifier
         features = complete_model.features
         split_idx = len(features) // 2
-        self.features_second_half = nn.Sequential(*list(features.children())[split_idx:]).to(self.device)
-        self.classifier = complete_model.classifier.to(self.device)
+        
+        self.features_second_half = nn.Sequential(*list(features.children())[split_idx:])
+        self.classifier = complete_model.classifier
+        
+        self.features_second_half.to(self.device)
+        self.classifier.to(self.device)
     
     def forward(self, x_rref):
         logging.info(f"MobileNetV2Shard2: Received input tensor with shape {x_rref.to_here().shape}")
@@ -85,21 +93,54 @@ class MobileNetV2Shard2(ModelShardBase):
 
 # Distributed model using pipeline parallelism
 class DistributedModel(nn.Module):
-    def __init__(self, model_type: str, num_splits: int, workers: List[str], num_classes: int = 1000):
+    def __init__(self, model_type: str, num_splits: int, workers: List[str], num_classes: int = 10):
         super(DistributedModel, self).__init__()
-        if model_type != 'mobilenetv2':
-            raise ValueError(f"Unsupported model type: {model_type}")
-        self.p1_rref = rpc.remote(workers[0], MobileNetV2Shard1, args=("cpu", num_classes))
-        self.p2_rref = rpc.remote(workers[1], MobileNetV2Shard2, args=("cpu", num_classes))
+        self.model_type = model_type
         self.num_splits = num_splits
+        
+        # Map model_type to appropriate shard classes
+        shard_classes = {
+            'mobilenetv2': (MobileNetV2Shard1, MobileNetV2Shard2),
+            # Other models can be added here
+        }
+        
+        if model_type not in shard_classes:
+            raise ValueError(f"Unsupported model type: {model_type}")
+        
+        Shard1, Shard2 = shard_classes[model_type]
+        
+        # Put the first part of the model on workers[0]
+        self.p1_rref = rpc.remote(
+            workers[0],
+            Shard1,
+            args=("cpu", num_classes)
+        )
+        
+        # Put the second part of the model on workers[1]
+        self.p2_rref = rpc.remote(
+            workers[1],
+            Shard2,
+            args=("cpu", num_classes)
+        )
     
     def forward(self, xs):
+        # Pipeline parallelism implementation
         out_futures = []
-        for x in iter(xs.split(self.num_splits, dim=0)):
+        
+        # Split input batch into micro-batches
+        for i, x in enumerate(iter(xs.split(self.num_splits, dim=0))):
+            logging.info(f"Processing micro-batch {i+1}/{self.num_splits}")
+            # Create RRef for the input data
             x_rref = RRef(x)
+            
+            # Forward through first shard
             y_rref = self.p1_rref.remote().forward(x_rref)
+            
+            # Forward through second shard (asynchronously)
             z_fut = self.p2_rref.rpc_async().forward(y_rref)
             out_futures.append(z_fut)
+        
+        # Collect and concatenate all outputs
         return torch.cat(torch.futures.wait_all(out_futures))
     
     def parameter_rrefs(self):
@@ -130,7 +171,7 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
     
     # Get master address from .env file
     master_addr = os.getenv('MASTER_ADDR', 'localhost')
-    master_port = os.getenv('MASTER_PORT', '55555')
+    master_port = os.getenv('MASTER_PORT', '29555')
     
     logger.info(f"Using master address: {master_addr} and port: {master_port}")
     
@@ -146,21 +187,21 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
         # For WiFi connections on Raspberry Pis
         os.environ['GLOO_SOCKET_IFNAME'] = 'wlan0'  # Typical WiFi interface name on Pis
         logger.info(f"Set GLOO_SOCKET_IFNAME to bind to WiFi interface")
-
+    
     # Define RPC names for workers
     rpc_backend_options = rpc.TensorPipeRpcBackendOptions(
         num_worker_threads=4,
-        rpc_timeout=120  # infinity
+        rpc_timeout=120  # 2 minute timeout
     )
-
-    if rank != 0:
-        logger.info(f"Worker {rank} waiting for 10 seconds to ensure master is ready...")
-        time.sleep(10)
-        logger.info(f"Worker {rank} proceeding with initialization")
     
     if rank == 0:  # Master node
         logger.info("Initializing master node")
         try:
+            # Force master to bind to the network interface
+            os.environ['GLOO_SOCKET_IFNAME'] = 'enp6s0'  # Using your wired interface
+            logger.info(f"Master binding to interface: {os.environ.get('GLOO_SOCKET_IFNAME')}")
+            
+            # Initialize RPC for master
             rpc.init_rpc(
                 "master",
                 rank=rank,
@@ -234,17 +275,35 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
             
     else:  # Workers
         logger.info(f"Initializing worker node with rank {rank}")
-        try:
-            rpc.init_rpc(
-                f"worker{rank}",
-                rank=rank,
-                world_size=world_size,
-                rpc_backend_options=rpc_backend_options
-            )
-            logger.info(f"Worker {rank} RPC initialized and waiting for requests")
-            
-        except Exception as e:
-            logger.error(f"Error in worker node: {str(e)}", exc_info=True)
+        retry_count = 0
+        max_retries = 30  # More retries
+        connected = False
+        
+        while retry_count < max_retries and not connected:
+            try:
+                # Force workers to use WiFi interface
+                os.environ['GLOO_SOCKET_IFNAME'] = 'wlan0'
+                logger.info(f"Worker binding to interface: {os.environ.get('GLOO_SOCKET_IFNAME')}")
+                
+                logger.info(f"Worker {rank} attempt {retry_count+1} to connect to master...")
+                rpc.init_rpc(
+                    f"worker{rank}",
+                    rank=rank,
+                    world_size=world_size,
+                    rpc_backend_options=rpc_backend_options
+                )
+                logger.info(f"Worker {rank} RPC initialized successfully")
+                connected = True
+            except Exception as e:
+                retry_count += 1
+                logger.warning(f"Connection attempt {retry_count} failed: {str(e)}")
+                if retry_count >= max_retries:
+                    logger.error(f"Worker {rank} failed to connect after {max_retries} attempts")
+                    raise
+                # Randomize wait time slightly to avoid synchronization issues
+                wait_time = 10 + (retry_count % 5)  
+                logger.info(f"Retrying in {wait_time} seconds... ({retry_count}/{max_retries})")
+                time.sleep(wait_time)
     
     # Block until all RPCs finish
     logger.info("Waiting for RPC shutdown")
@@ -252,18 +311,32 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
     logger.info("RPC shutdown complete")
 
 def main():
+    # Parse command line arguments
     parser = argparse.ArgumentParser(description="Distributed DNN Inference on Raspberry Pi")
     parser.add_argument("--rank", type=int, default=0, help="Rank of current process")
     parser.add_argument("--world-size", type=int, default=3, help="World size (1 master + N workers)")
-    parser.add_argument("--model", type=str, default="mobilenetv2", choices=["mobilenetv2"], help="Model architecture")
-    parser.add_argument("--batch-size", type=int, default=16, help="Batch size")
-    parser.add_argument("--micro-batches", type=int, default=4, help="Number of micro-batches for pipeline")
+    parser.add_argument("--model", type=str, default="mobilenetv2", 
+                        choices=["mobilenetv2"],
+                        help="Model architecture")
+    parser.add_argument("--batch-size", type=int, default=8, help="Batch size")
+    parser.add_argument("--micro-batches", type=int, default=2, help="Number of micro-batches for pipeline")
     parser.add_argument("--num-classes", type=int, default=10, help="Number of output classes")
-    parser.add_argument("--dataset", type=str, default="cifar10", choices=["cifar10", "mnist"], help="Dataset to use for inference")
+    parser.add_argument("--dataset", type=str, default="cifar10", 
+                        choices=["cifar10", "dummy"],
+                        help="Dataset to use for inference")
     
     args = parser.parse_args()
-    run_inference(rank=args.rank, world_size=args.world_size, model_type=args.model, batch_size=args.batch_size,
-                  num_micro_batches=args.micro_batches, num_classes=args.num_classes, dataset=args.dataset)
+    
+    # Run inference
+    run_inference(
+        rank=args.rank,
+        world_size=args.world_size,
+        model_type=args.model,
+        batch_size=args.batch_size,
+        num_micro_batches=args.micro_batches,
+        num_classes=args.num_classes,
+        dataset=args.dataset
+    )
 
 if __name__ == "__main__":
     main()
