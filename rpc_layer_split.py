@@ -190,18 +190,22 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
         os.environ['GLOO_SOCKET_IFNAME'] = 'wlan0'  # Typical WiFi interface name on Pis
         logger.info(f"Set GLOO_SOCKET_IFNAME to bind to WiFi interface")
     
-    # Define RPC names for workers
-    rpc_backend_options = rpc.TensorPipeRpcBackendOptions(
-        num_worker_threads=4,
-        rpc_timeout=120  # 2 minute timeout
-    )
-    
     # Flag to track if RPC was successfully initialized
     rpc_initialized = False
     
     if rank == 0:  # Master node
         logger.info("Initializing master node")
         try:
+            # Create a more explicit RPC backend options
+            rpc_backend_options = rpc.TensorPipeRpcBackendOptions(
+                num_worker_threads=4,
+                rpc_timeout=120,
+                _transports=["uv"],  # Force using UV transport only
+                init_method=f"tcp://0.0.0.0:{master_port}"  # Explicit init method
+            )
+            
+            logger.info(f"Master using explicit init_method: tcp://0.0.0.0:{master_port}")
+            
             # Initialize RPC for master
             rpc.init_rpc(
                 "master",
@@ -212,7 +216,65 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
             logger.info("Master RPC initialized successfully")
             rpc_initialized = True
             
-            # Rest of master code...
+            # Define worker names
+            workers = [f"worker{i}" for i in range(1, world_size)]
+            logger.info(f"Setting up model with workers: {workers}")
+            
+            # Create distributed model
+            model = DistributedModel(
+                model_type=model_type,
+                num_splits=num_micro_batches,
+                workers=workers,
+                num_classes=num_classes
+            )
+            logger.info("Distributed model created successfully")
+            
+            # Load data
+            logger.info(f"Loading {dataset} dataset")
+            if dataset == 'cifar10':
+                transform = transforms.Compose([
+                    transforms.ToTensor(),
+                    transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+                    transforms.Resize((224, 224))
+                ])
+                
+                dataset_path = os.path.expanduser('~/datasets/cifar10')
+                logger.info(f"Loading CIFAR-10 from: {dataset_path}")
+                
+                test_dataset = datasets.CIFAR10(
+                    root=dataset_path,
+                    train=False, 
+                    download=False,
+                    transform=transform
+                )
+                
+                test_loader = torch.utils.data.DataLoader(
+                    test_dataset, batch_size=batch_size, shuffle=True
+                )
+                
+                images, labels = next(iter(test_loader))
+                logger.info(f"Loaded batch of {len(images)} images with shape: {images.shape}")
+                logger.info(f"First few labels: {labels[:5]}")
+            else:
+                images = torch.randn(batch_size, 3, 224, 224)
+                logger.info(f"Using dummy data with shape: {images.shape}")
+            
+            # Run inference
+            logger.info("Starting inference...")
+            start_time = time.time()
+            with torch.no_grad():
+                logger.info("Sending data through the pipeline...")
+                output = model(images)
+                logger.info(f"Received output from pipeline with shape: {output.shape}")
+            elapsed_time = time.time() - start_time
+            
+            logger.info(f"Inference completed in {elapsed_time:.4f} seconds")
+            
+            # Print some results
+            if dataset == 'cifar10':
+                _, predicted = torch.max(output.data, 1)
+                logger.info(f"First few predictions: {predicted[:5]}")
+                logger.info(f"First few actual labels: {labels[:5]}")
             
         except Exception as e:
             logger.error(f"Error in master node: {str(e)}", exc_info=True)
@@ -228,6 +290,16 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
                 # Force workers to use WiFi interface
                 os.environ['GLOO_SOCKET_IFNAME'] = 'wlan0'
                 logger.info(f"Worker binding to interface: {os.environ.get('GLOO_SOCKET_IFNAME')}")
+                
+                # Create a more explicit RPC backend options
+                rpc_backend_options = rpc.TensorPipeRpcBackendOptions(
+                    num_worker_threads=4,
+                    rpc_timeout=120,
+                    _transports=["uv"],  # Force using UV transport only
+                    init_method=f"tcp://{master_addr}:{master_port}"  # Explicit init method
+                )
+                
+                logger.info(f"Worker using explicit init_method: tcp://{master_addr}:{master_port}")
                 
                 logger.info(f"Worker {rank} attempt {retry_count+1} to connect to master...")
                 
@@ -258,7 +330,7 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
                 logger.info(f"Retrying in {wait_time} seconds... ({retry_count}/{max_retries})")
                 time.sleep(wait_time)
 
-    if not connected:
+    if not connected and rank != 0:
         logger.error("Worker failed to connect to master node")
         # Exit with a non-zero code so the shell script knows to retry
         sys.exit(1)
