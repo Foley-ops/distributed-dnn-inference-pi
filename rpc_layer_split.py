@@ -255,6 +255,11 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
                 wait_time = 10 + (retry_count % 5)
                 logger.info(f"Retrying in {wait_time} seconds... ({retry_count}/{max_retries})")
                 time.sleep(wait_time)
+
+    if not connected:
+        logger.error("Worker failed to connect to master node")
+        # Exit with a non-zero code so the shell script knows to retry
+        sys.exit(1)
     
     # Only call shutdown if RPC was successfully initialized
     if rpc_initialized:
