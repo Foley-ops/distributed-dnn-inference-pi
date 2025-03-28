@@ -14,7 +14,6 @@ import torchvision.datasets as datasets
 import torchvision.transforms as transforms
 import torchvision.models as torchvision_models
 from dotenv import load_dotenv
-from datetime import timedelta
 from typing import List
 
 # -------------------------------------------------------------------
@@ -167,11 +166,11 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
     if rank == 0:
         os.environ['GLOO_SOCKET_IFNAME'] = 'enp6s0'
         os.environ['TP_SOCKET_IFNAME']   = 'enp6s0'
-        logger.info(f"Master using interface enp6s0 for binding")
+        logger.info("Master using interface enp6s0 for binding")
     else:
         os.environ['GLOO_SOCKET_IFNAME'] = 'wlan0'
         os.environ['TP_SOCKET_IFNAME']   = 'wlan0'
-        logger.info(f"Worker binding to interface wlan0")
+        logger.info("Worker binding to interface wlan0")
 
     rpc_initialized = init_rpc_with_retries(
         name="master" if rank == 0 else f"worker{rank}",
@@ -234,17 +233,21 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
                 logger.info(f"First few actual labels: {labels[:5]}")
         except Exception as e:
             logger.error(f"Error in master node: {str(e)}", exc_info=True)
-    else:  # Worker nodes
+    else:
         logger.info(f"Worker node {rank} is ready and waiting for tasks.")
+        # Keep worker alive long enough for the master to complete its RPCs.
+        time.sleep(60)
 
-    # Shutdown RPC if initialized.
-    if rpc.is_initialized():
-        logger.info("Waiting for RPC shutdown")
-        try:
+    # Shutdown RPC based on our own initialization flag.
+    if rpc_initialized:
+        if rank == 0:
+            logger.info("Master calling rpc.shutdown()")
             rpc.shutdown()
-            logger.info("RPC shutdown complete")
-        except Exception as e:
-            logger.error(f"Error during shutdown: {str(e)}")
+            logger.info("Master RPC shutdown complete")
+        else:
+            logger.info(f"Worker {rank} calling rpc.shutdown() after delay")
+            rpc.shutdown()
+            logger.info(f"Worker {rank} RPC shutdown complete")
     else:
         logger.warning("RPC was not successfully initialized, skipping shutdown")
 
