@@ -16,6 +16,7 @@ from dotenv import load_dotenv
 import argparse
 import logging
 import socket
+import sys
 from typing import List
 
 # Configure logging
