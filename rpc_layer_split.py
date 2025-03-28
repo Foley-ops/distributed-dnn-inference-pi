@@ -47,8 +47,9 @@ class MobileNetV2Shard1(ModelShardBase):
         super(MobileNetV2Shard1, self).__init__(device)
         
         # Use torchvision's MobileNetV2
-        complete_model = torchvision_models.mobilenet_v2(num_classes=num_classes)
-        
+        # complete_model = torchvision_models.mobilenet_v2(num_classes=num_classes)
+        complete_model = torchvision_models.mobilenet_v2(pretrained=True, num_classes=num_classes)
+
         # First shard includes the features up to halfway point
         features = complete_model.features
         split_idx = len(features) // 2
@@ -70,8 +71,9 @@ class MobileNetV2Shard2(ModelShardBase):
         super(MobileNetV2Shard2, self).__init__(device)
         
         # Use torchvision's MobileNetV2
-        complete_model = torchvision_models.mobilenet_v2(num_classes=num_classes)
-        
+        # complete_model = torchvision_models.mobilenet_v2(num_classes=num_classes)
+        complete_model = torchvision_models.mobilenet_v2(pretrained=True, num_classes=num_classes)
+
         # Extract the second half of features and the classifier
         features = complete_model.features
         split_idx = len(features) // 2
