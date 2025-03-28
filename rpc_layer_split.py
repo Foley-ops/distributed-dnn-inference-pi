@@ -150,7 +150,7 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
     # Define RPC names for workers
     rpc_backend_options = rpc.TensorPipeRpcBackendOptions(
         num_worker_threads=4,
-        rpc_timeout=0  # infinity
+        rpc_timeout=120  # infinity
     )
 
     if rank != 0:
