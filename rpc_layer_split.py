@@ -177,54 +177,52 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
     
     logger.info(f"Using master address: {master_addr} and port: {master_port}")
     
-    # Initialize RPC framework
-    os.environ['MASTER_ADDR'] = master_addr
-    os.environ['MASTER_PORT'] = master_port
+    # Create a path for the shared init file
+    shared_file_path = "~datasets/tmp/rpc_init_file"
+    init_method = f"file://{shared_file_path}"
+    logger.info(f"Using shared file initialization: {init_method}")
     
+    # Set interface environment variables
     if rank == 0:  # Only on master node
         os.environ['GLOO_SOCKET_IFNAME'] = 'enp6s0'
-        logger.info(f"Set GLOO_SOCKET_IFNAME to enp6s0 for binding")
+        logger.info(f"Master using interface: enp6s0")
     else:  # Only on worker nodes
         os.environ['GLOO_SOCKET_IFNAME'] = 'wlan0'
-        logger.info(f"Set GLOO_SOCKET_IFNAME to bind to WiFi interface")
+        logger.info(f"Worker using interface: wlan0")
+    
+    # Configure RPC options
+    rpc_backend_options = rpc.TensorPipeRpcBackendOptions(
+        num_worker_threads=4,
+        rpc_timeout=120
+    )
     
     # Flag to track if RPC was successfully initialized
     rpc_initialized = False
     
-    # Use the explicit store method
-    store = rpc.TcpStore(
-        host=master_addr if rank != 0 else "0.0.0.0",
-        port=int(master_port),
-        is_master=(rank == 0),
-        timeout=timedelta(seconds=120)
-    )
-    
     if rank == 0:  # Master node
         logger.info("Initializing master node")
         try:
-            # Initialize RPC with explicit store
+            # Initialize RPC for master with file method
             rpc.init_rpc(
                 "master",
                 rank=rank,
                 world_size=world_size,
-                backend=rpc.BackendType.PROCESS_GROUP,
-                rpc_backend_options=rpc.ProcessGroupRpcBackendOptions(
-                    init_method=f"tcp://0.0.0.0:{master_port}",
-                    _transports=["gloo"],
-                    process_group_timeout=timedelta(seconds=120),
-                    num_send_recv_threads=4,
-                    store=store
-                )
+                rpc_backend_options=rpc_backend_options,
+                init_method=init_method
             )
             logger.info("Master RPC initialized successfully")
             rpc_initialized = True
             
-            # Rest of master code...
+            # Rest of the master node code...
             
         except Exception as e:
             logger.error(f"Error in master node: {str(e)}", exc_info=True)
             
     else:  # Workers
+        # Workers should wait a bit longer to ensure master creates the file
+        logger.info(f"Worker {rank} waiting for master to initialize...")
+        time.sleep(10)
+        
         logger.info(f"Initializing worker node with rank {rank}")
         retry_count = 0
         max_retries = 30
@@ -234,19 +232,20 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
             try:
                 logger.info(f"Worker {rank} attempt {retry_count+1} to connect to master...")
                 
-                # Initialize RPC with explicit store
+                # Check if RPC is already initialized
+                if hasattr(rpc, 'is_initialized') and rpc.is_initialized():
+                    logger.info("RPC is already initialized; skipping reinitialization.")
+                    connected = True
+                    rpc_initialized = True
+                    break
+                
+                # Initialize RPC for worker with file method
                 rpc.init_rpc(
                     f"worker{rank}",
                     rank=rank,
                     world_size=world_size,
-                    backend=rpc.BackendType.PROCESS_GROUP,
-                    rpc_backend_options=rpc.ProcessGroupRpcBackendOptions(
-                        init_method=f"tcp://{master_addr}:{master_port}",
-                        _transports=["gloo"],
-                        process_group_timeout=timedelta(seconds=120),
-                        num_send_recv_threads=4,
-                        store=store
-                    )
+                    rpc_backend_options=rpc_backend_options,
+                    init_method=init_method
                 )
                 logger.info(f"Worker {rank} RPC initialized successfully")
                 connected = True
