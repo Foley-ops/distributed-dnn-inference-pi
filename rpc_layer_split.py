@@ -50,6 +50,10 @@ class MobileNetV2Shard1(ModelShardBase):
         # complete_model = torchvision_models.mobilenet_v2(num_classes=num_classes)
         complete_model = torchvision_models.mobilenet_v2(pretrained=True, num_classes=num_classes)
 
+        # adjust number of output classes if needed 
+        if num_classes != 1000: 
+            complete_model.classifier[1] = nn.Linear(complete_model.last_channel, num_classes)
+
         # First shard includes the features up to halfway point
         features = complete_model.features
         split_idx = len(features) // 2
@@ -73,6 +77,10 @@ class MobileNetV2Shard2(ModelShardBase):
         # Use torchvision's MobileNetV2
         # complete_model = torchvision_models.mobilenet_v2(num_classes=num_classes)
         complete_model = torchvision_models.mobilenet_v2(pretrained=True, num_classes=num_classes)
+
+        # adjust number of output classes if needed 
+        if num_classes != 1000: 
+            complete_model.classifier[1] = nn.Linear(complete_model.last_channel, num_classes)
 
         # Extract the second half of features and the classifier
         features = complete_model.features
