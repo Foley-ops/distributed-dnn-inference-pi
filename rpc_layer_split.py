@@ -14,8 +14,8 @@ from typing import List, Tuple, Dict, Optional
 
 # Import available lightweight models
 from models.mobilenetv2.model import MobileNetV2
-from models.squeezenet.model import SqueezeNet
-from models.efficientnet_b0.model import EfficientNetB0
+# from models.squeezenet.model import SqueezeNet
+# from models.efficientnet_b0.model import EfficientNetB0
 
 # Base class for model shards
 class ModelShardBase(nn.Module):
