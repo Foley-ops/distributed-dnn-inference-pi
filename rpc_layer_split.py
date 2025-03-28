@@ -1,40 +1,41 @@
 #!/usr/bin/env python3
-
-# Disable PyTorch's advanced CPU optimizations for Raspberry Pi compatibility
 import os
-os.environ['ATEN_CPU_CAPABILITY'] = ''
-
 import time
+import socket
+import sys
+import argparse
+import logging
+
 import torch
 import torch.nn as nn
 import torch.distributed.rpc as rpc
-from torch.distributed.rpc import RRef
+from torch.distributed.rpc import RRef, TensorPipeRpcBackendOptions
 import torchvision.datasets as datasets
 import torchvision.transforms as transforms
 import torchvision.models as torchvision_models
 from dotenv import load_dotenv
 from datetime import timedelta
-import argparse
-import logging
-import socket
-import sys
 from typing import List
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s [%(hostname)s:rank%(rank)s]',
-)
+# -------------------------------------------------------------------
+# Explicit network configuration:
+# Set master IP and port; ensure MASTER_ADDR is reachable from workers.
+MASTER_IP = "10.100.117.1"       # Master node's enp6s0 IP.
+MASTER_PORT = "29555"            # Chosen port for RPC.
 
+os.environ["MASTER_ADDR"] = MASTER_IP
+os.environ["MASTER_PORT"] = MASTER_PORT
+
+# -------------------------------------------------------------------
 # Base class for model shards
 class ModelShardBase(nn.Module):
     def __init__(self, device):
         super(ModelShardBase, self).__init__()
         self.device = device
-    
+
     def forward(self, x_rref):
         raise NotImplementedError("Subclasses must implement forward method")
-    
+
     def parameter_rrefs(self):
         param_rrefs = []
         for param in self.parameters():
@@ -45,43 +46,31 @@ class ModelShardBase(nn.Module):
 class MobileNetV2Shard1(ModelShardBase):
     def __init__(self, device, num_classes=10):
         super(MobileNetV2Shard1, self).__init__(device)
-        
-        # Use torchvision's MobileNetV2
         complete_model = torchvision_models.mobilenet_v2(num_classes=num_classes)
-        
-        # First shard includes the features up to halfway point
         features = complete_model.features
         split_idx = len(features) // 2
-        
         self.features_first_half = nn.Sequential(*list(features.children())[:split_idx])
         self.features_first_half.to(self.device)
-    
+
     def forward(self, x_rref):
         logging.info(f"MobileNetV2Shard1: Received input tensor with shape {x_rref.to_here().shape}")
         x = x_rref.to_here().to(self.device)
         output = self.features_first_half(x)
         logging.info(f"MobileNetV2Shard1: Produced output tensor with shape {output.shape}")
-        # Return to CPU for RPC transfer
         return output.cpu()
 
 # Second half of MobileNetV2
 class MobileNetV2Shard2(ModelShardBase):
     def __init__(self, device, num_classes=10):
         super(MobileNetV2Shard2, self).__init__(device)
-        
-        # Use torchvision's MobileNetV2
         complete_model = torchvision_models.mobilenet_v2(num_classes=num_classes)
-        
-        # Extract the second half of features and the classifier
         features = complete_model.features
         split_idx = len(features) // 2
-        
         self.features_second_half = nn.Sequential(*list(features.children())[split_idx:])
         self.classifier = complete_model.classifier
-        
         self.features_second_half.to(self.device)
         self.classifier.to(self.device)
-    
+
     def forward(self, x_rref):
         logging.info(f"MobileNetV2Shard2: Received input tensor with shape {x_rref.to_here().shape}")
         x = x_rref.to_here().to(self.device)
@@ -90,7 +79,6 @@ class MobileNetV2Shard2(ModelShardBase):
         x = torch.flatten(x, 1)
         x = self.classifier(x)
         logging.info(f"MobileNetV2Shard2: Produced output tensor with shape {x.shape}")
-        # Return to CPU for RPC transfer
         return x.cpu()
 
 # Distributed model using pipeline parallelism
@@ -99,63 +87,60 @@ class DistributedModel(nn.Module):
         super(DistributedModel, self).__init__()
         self.model_type = model_type
         self.num_splits = num_splits
-        
-        # Map model_type to appropriate shard classes
+
         shard_classes = {
             'mobilenetv2': (MobileNetV2Shard1, MobileNetV2Shard2),
-            # Other models can be added here
         }
-        
         if model_type not in shard_classes:
             raise ValueError(f"Unsupported model type: {model_type}")
-        
         Shard1, Shard2 = shard_classes[model_type]
-        
-        # Put the first part of the model on workers[0]
+
+        # Place shards on remote workers.
         self.p1_rref = rpc.remote(
             workers[0],
             Shard1,
             args=("cpu", num_classes)
         )
-        
-        # Put the second part of the model on workers[1]
         self.p2_rref = rpc.remote(
             workers[1],
             Shard2,
             args=("cpu", num_classes)
         )
-    
+
     def forward(self, xs):
-        # Pipeline parallelism implementation
         out_futures = []
-        
-        # Split input batch into micro-batches
         for i, x in enumerate(iter(xs.split(self.num_splits, dim=0))):
             logging.info(f"Processing micro-batch {i+1}/{self.num_splits}")
-            # Create RRef for the input data
             x_rref = RRef(x)
-            
-            # Forward through first shard
             y_rref = self.p1_rref.remote().forward(x_rref)
-            
-            # Forward through second shard (asynchronously)
             z_fut = self.p2_rref.rpc_async().forward(y_rref)
             out_futures.append(z_fut)
-        
-        # Collect and concatenate all outputs
         return torch.cat(torch.futures.wait_all(out_futures))
-    
+
     def parameter_rrefs(self):
         remote_params = []
         remote_params.extend(self.p1_rref.remote().parameter_rrefs().to_here())
         remote_params.extend(self.p2_rref.remote().parameter_rrefs().to_here())
         return remote_params
 
+# -------------------------------------------------------------------
+# Robust RPC initialization with retries and proper cleanup.
+def init_rpc_with_retries(name, rank, world_size, options, max_retries=3):
+    for attempt in range(1, max_retries + 1):
+        try:
+            rpc.init_rpc(name=name, rank=rank, world_size=world_size, rpc_backend_options=options)
+            logging.info(f"[Rank {rank}] RPC initialized successfully on attempt {attempt}.")
+            return True
+        except Exception as e:
+            logging.warning(f"[Rank {rank}] rpc.init_rpc failed on attempt {attempt}: {e}")
+            try:
+                rpc.shutdown(graceful=False)
+            except Exception as cleanup_err:
+                logging.warning(f"[Rank {rank}] RPC shutdown during cleanup raised: {cleanup_err}")
+            time.sleep(5)
+    return False
+
 def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, num_classes, dataset):
-    """
-    Main function to run distributed inference
-    """
-    # Add hostname to log formatter
     hostname = socket.gethostname()
     old_factory = logging.getLogRecordFactory()
     def record_factory(*args, **kwargs):
@@ -164,64 +149,46 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
         record.rank = rank
         return record
     logging.setLogRecordFactory(record_factory)
-    
     logger = logging.getLogger(__name__)
     logger.info("Starting distributed inference process")
-
-    # Load environment variables
     load_dotenv()
-    
-    # Get master address from .env file
-    master_addr = os.getenv('MASTER_ADDR', 'localhost')
-    master_port = os.getenv('MASTER_PORT', '29555')
-    
+
+    master_addr = os.getenv('MASTER_ADDR', MASTER_IP)
+    master_port = os.getenv('MASTER_PORT', MASTER_PORT)
     logger.info(f"Using master address: {master_addr} and port: {master_port}")
-    
-    # Initialize RPC framework
-    os.environ['MASTER_ADDR'] = master_addr
-    os.environ['MASTER_PORT'] = master_port
-    
-    if rank == 0:  # Only on master node
-        # Specify the interface with the master node IP address
-        os.environ['GLOO_SOCKET_IFNAME'] = 'enp6s0'  # Using your wired interface
-        os.environ['TENSORPIPE_SOCKET_IFADDR'] = '0.0.0.0'
-        logger.info(f"Set GLOO_SOCKET_IFNAME to enp6s0 for binding")
-    else:  # Only on worker nodes
-        # For WiFi connections on Raspberry Pis
-        os.environ['GLOO_SOCKET_IFNAME'] = 'wlan0'  # Typical WiFi interface name on Pis
-        logger.info(f"Set GLOO_SOCKET_IFNAME to bind to WiFi interface")
-    
-    # Flag to track if RPC was successfully initialized
-    rpc_initialized = False
-    
+
+    # Configure network interfaces for RPC.
+    options = TensorPipeRpcBackendOptions(
+        num_worker_threads=4,
+        rpc_timeout=120,
+        init_method=f"tcp://{master_addr}:{master_port}"
+    )
+
+    if rank == 0:
+        os.environ['GLOO_SOCKET_IFNAME'] = 'enp6s0'
+        os.environ['TP_SOCKET_IFNAME']   = 'enp6s0'
+        logger.info(f"Master using interface enp6s0 for binding")
+    else:
+        os.environ['GLOO_SOCKET_IFNAME'] = 'wlan0'
+        os.environ['TP_SOCKET_IFNAME']   = 'wlan0'
+        logger.info(f"Worker binding to interface wlan0")
+
+    rpc_initialized = init_rpc_with_retries(
+        name="master" if rank == 0 else f"worker{rank}",
+        rank=rank,
+        world_size=world_size,
+        options=options,
+        max_retries=3
+    )
+    if not rpc_initialized:
+        logger.error(f"[Rank {rank}] RPC initialization failed after multiple attempts")
+        sys.exit(1)
+
     if rank == 0:  # Master node
         logger.info("Initializing master node")
+        workers = [f"worker{i}" for i in range(1, world_size)]
+        logger.info(f"Setting up model with workers: {workers}")
         try:
-            # Create a more explicit RPC backend options
-            rpc_backend_options = rpc.TensorPipeRpcBackendOptions(
-                num_worker_threads=4,
-                rpc_timeout=120,
-                _transports=["uv"],  # Force using UV transport only
-                init_method=f"tcp://0.0.0.0:{master_port}"  # Explicit init method
-            )
-            
-            logger.info(f"Master using explicit init_method: tcp://0.0.0.0:{master_port}")
-            
-            # Initialize RPC for master
-            rpc.init_rpc(
-                "master",
-                rank=rank,
-                world_size=world_size,
-                rpc_backend_options=rpc_backend_options
-            )
-            logger.info("Master RPC initialized successfully")
-            rpc_initialized = True
-            
-            # Define worker names
-            workers = [f"worker{i}" for i in range(1, world_size)]
-            logger.info(f"Setting up model with workers: {workers}")
-            
-            # Create distributed model
             model = DistributedModel(
                 model_type=model_type,
                 num_splits=num_micro_batches,
@@ -229,8 +196,6 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
                 num_classes=num_classes
             )
             logger.info("Distributed model created successfully")
-            
-            # Load data
             logger.info(f"Loading {dataset} dataset")
             if dataset == 'cifar10':
                 transform = transforms.Compose([
@@ -238,29 +203,23 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
                     transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
                     transforms.Resize((224, 224))
                 ])
-                
                 dataset_path = os.path.expanduser('~/datasets/cifar10')
                 logger.info(f"Loading CIFAR-10 from: {dataset_path}")
-                
                 test_dataset = datasets.CIFAR10(
                     root=dataset_path,
                     train=False, 
                     download=False,
                     transform=transform
                 )
-                
                 test_loader = torch.utils.data.DataLoader(
                     test_dataset, batch_size=batch_size, shuffle=True
                 )
-                
                 images, labels = next(iter(test_loader))
                 logger.info(f"Loaded batch of {len(images)} images with shape: {images.shape}")
                 logger.info(f"First few labels: {labels[:5]}")
             else:
                 images = torch.randn(batch_size, 3, 224, 224)
                 logger.info(f"Using dummy data with shape: {images.shape}")
-            
-            # Run inference
             logger.info("Starting inference...")
             start_time = time.time()
             with torch.no_grad():
@@ -268,76 +227,18 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
                 output = model(images)
                 logger.info(f"Received output from pipeline with shape: {output.shape}")
             elapsed_time = time.time() - start_time
-            
             logger.info(f"Inference completed in {elapsed_time:.4f} seconds")
-            
-            # Print some results
             if dataset == 'cifar10':
                 _, predicted = torch.max(output.data, 1)
                 logger.info(f"First few predictions: {predicted[:5]}")
                 logger.info(f"First few actual labels: {labels[:5]}")
-            
         except Exception as e:
             logger.error(f"Error in master node: {str(e)}", exc_info=True)
-            
-    else:  # Workers
-        logger.info(f"Initializing worker node with rank {rank}")
-        retry_count = 0
-        max_retries = 30  # More retries
-        connected = False
-        
-        while retry_count < max_retries and not connected:
-            try:
-                # Force workers to use WiFi interface
-                os.environ['GLOO_SOCKET_IFNAME'] = 'wlan0'
-                logger.info(f"Worker binding to interface: {os.environ.get('GLOO_SOCKET_IFNAME')}")
-                
-                # Create a more explicit RPC backend options
-                rpc_backend_options = rpc.TensorPipeRpcBackendOptions(
-                    num_worker_threads=4,
-                    rpc_timeout=120,
-                    _transports=["uv"],  # Force using UV transport only
-                    init_method=f"tcp://{master_addr}:{master_port}"  # Explicit init method
-                )
-                
-                logger.info(f"Worker using explicit init_method: tcp://{master_addr}:{master_port}")
-                
-                logger.info(f"Worker {rank} attempt {retry_count+1} to connect to master...")
-                
-                # Check if RPC is already initialized; if so, skip reinitialization
-                if hasattr(rpc, 'is_initialized') and rpc.is_initialized():
-                    logger.info("RPC is already initialized; skipping reinitialization.")
-                    connected = True
-                    rpc_initialized = True
-                    break
-                
-                rpc.init_rpc(
-                    f"worker{rank}",
-                    rank=rank,
-                    world_size=world_size,
-                    rpc_backend_options=rpc_backend_options
-                )
-                logger.info(f"Worker {rank} RPC initialized successfully")
-                connected = True
-                rpc_initialized = True
-                
-            except Exception as e:
-                retry_count += 1
-                logger.warning(f"Connection attempt {retry_count} failed: {str(e)}")
-                if retry_count >= max_retries:
-                    logger.error(f"Worker {rank} failed to connect after {max_retries} attempts")
-                    break  # Exit the loop instead of raising
-                wait_time = 10 + (retry_count % 5)
-                logger.info(f"Retrying in {wait_time} seconds... ({retry_count}/{max_retries})")
-                time.sleep(wait_time)
+    else:  # Worker nodes
+        logger.info(f"Worker node {rank} is ready and waiting for tasks.")
 
-    if not connected and rank != 0:
-        logger.error("Worker failed to connect to master node")
-        # Exit with a non-zero code so the shell script knows to retry
-        sys.exit(1)
-    
-    # Only call shutdown if RPC was successfully initialized
-    if rpc_initialized:
+    # Shutdown RPC if initialized.
+    if rpc.is_initialized():
         logger.info("Waiting for RPC shutdown")
         try:
             rpc.shutdown()
@@ -345,26 +246,18 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
         except Exception as e:
             logger.error(f"Error during shutdown: {str(e)}")
     else:
-        logger.warning("RPC was never successfully initialized, skipping shutdown")
+        logger.warning("RPC was not successfully initialized, skipping shutdown")
 
 def main():
-    # Parse command line arguments
     parser = argparse.ArgumentParser(description="Distributed DNN Inference on Raspberry Pi")
     parser.add_argument("--rank", type=int, default=0, help="Rank of current process")
     parser.add_argument("--world-size", type=int, default=3, help="World size (1 master + N workers)")
-    parser.add_argument("--model", type=str, default="mobilenetv2", 
-                        choices=["mobilenetv2"],
-                        help="Model architecture")
+    parser.add_argument("--model", type=str, default="mobilenetv2", choices=["mobilenetv2"], help="Model architecture")
     parser.add_argument("--batch-size", type=int, default=8, help="Batch size")
     parser.add_argument("--micro-batches", type=int, default=2, help="Number of micro-batches for pipeline")
     parser.add_argument("--num-classes", type=int, default=10, help="Number of output classes")
-    parser.add_argument("--dataset", type=str, default="cifar10", 
-                        choices=["cifar10", "dummy"],
-                        help="Dataset to use for inference")
-    
+    parser.add_argument("--dataset", type=str, default="cifar10", choices=["cifar10", "dummy"], help="Dataset to use for inference")
     args = parser.parse_args()
-    
-    # Run inference
     run_inference(
         rank=args.rank,
         world_size=args.world_size,
