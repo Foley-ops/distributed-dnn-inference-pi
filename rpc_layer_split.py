@@ -152,6 +152,11 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
         num_worker_threads=4,
         rpc_timeout=0  # infinity
     )
+
+    if rank != 0:
+        logger.info(f"Worker {rank} waiting for 10 seconds to ensure master is ready...")
+        time.sleep(10)
+        logger.info(f"Worker {rank} proceeding with initialization")
     
     if rank == 0:  # Master node
         logger.info("Initializing master node")
