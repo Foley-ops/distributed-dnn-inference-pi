@@ -201,41 +201,53 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
             )
             logger.info("Distributed model created successfully")
             logger.info(f"Loading {dataset} dataset")
+            
+            # Load only one image
             if dataset == 'cifar10':
                 transform = transforms.Compose([
                     transforms.ToTensor(),
                     transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
                     transforms.Resize((224, 224))
                 ])
+                
                 dataset_path = os.path.expanduser('~/datasets/cifar10')
                 logger.info(f"Loading CIFAR-10 from: {dataset_path}")
+                
                 test_dataset = datasets.CIFAR10(
                     root=dataset_path,
                     train=False, 
                     download=False,
                     transform=transform
                 )
-                test_loader = torch.utils.data.DataLoader(
-                    test_dataset, batch_size=batch_size, shuffle=True
-                )
-                images, labels = next(iter(test_loader))
-                logger.info(f"Loaded batch of {len(images)} images with shape: {images.shape}")
-                logger.info(f"First few labels: {labels[:5]}")
+                
+                # Get just a single image and reshape it to add batch dimension
+                single_image, single_label = test_dataset[0]  # Get the first image
+                single_image = single_image.unsqueeze(0)  # Add batch dimension
+                single_label = torch.tensor([single_label])  # Convert to tensor with one element
+                
+                logger.info(f"Loaded single image with shape: {single_image.shape}")
+                logger.info(f"Label: {single_label.item()}")
             else:
-                images = torch.randn(batch_size, 3, 224, 224)
-                logger.info(f"Using dummy data with shape: {images.shape}")
+                # Generate a single random image
+                single_image = torch.randn(1, 3, 224, 224)  # Batch size of 1
+                single_label = None
+                logger.info(f"Using single dummy image with shape: {single_image.shape}")
+            
             logger.info("Starting inference...")
             start_time = time.time()
             with torch.no_grad():
                 logger.info("Sending data through the pipeline...")
-                output = model(images)
+                output = model(single_image)
                 logger.info(f"Received output from pipeline with shape: {output.shape}")
             elapsed_time = time.time() - start_time
+            
             logger.info(f"Inference completed in {elapsed_time:.4f} seconds")
-            if dataset == 'cifar10':
+            
+            if dataset == 'cifar10' and single_label is not None:
                 _, predicted = torch.max(output.data, 1)
-                logger.info(f"First few predictions: {predicted[:5]}")
-                logger.info(f"First few actual labels: {labels[:5]}")
+                logger.info(f"Prediction: {predicted.item()}")
+                logger.info(f"Actual label: {single_label.item()}")
+            
         except Exception as e:
             logger.error(f"Error in master node: {str(e)}", exc_info=True)
     else:
