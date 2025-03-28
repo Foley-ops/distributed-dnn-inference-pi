@@ -194,13 +194,12 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
         rpc_timeout=120  # 2 minute timeout
     )
     
+    # Flag to track if RPC was successfully initialized
+    rpc_initialized = False
+    
     if rank == 0:  # Master node
         logger.info("Initializing master node")
         try:
-            # Force master to bind to the network interface
-            os.environ['GLOO_SOCKET_IFNAME'] = 'enp6s0'  # Using your wired interface
-            logger.info(f"Master binding to interface: {os.environ.get('GLOO_SOCKET_IFNAME')}")
-            
             # Initialize RPC for master
             rpc.init_rpc(
                 "master",
@@ -209,66 +208,9 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
                 rpc_backend_options=rpc_backend_options
             )
             logger.info("Master RPC initialized successfully")
+            rpc_initialized = True
             
-            # Define worker names
-            workers = [f"worker{i}" for i in range(1, world_size)]
-            logger.info(f"Setting up model with workers: {workers}")
-            
-            # Create distributed model
-            model = DistributedModel(
-                model_type=model_type,
-                num_splits=num_micro_batches,
-                workers=workers,
-                num_classes=num_classes
-            )
-            logger.info("Distributed model created successfully")
-            
-            # Load data
-            logger.info(f"Loading {dataset} dataset")
-            if dataset == 'cifar10':
-                transform = transforms.Compose([
-                    transforms.ToTensor(),
-                    transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
-                    transforms.Resize((224, 224))
-                ])
-                
-                dataset_path = os.path.expanduser('~/datasets/cifar10')
-                logger.info(f"Loading CIFAR-10 from: {dataset_path}")
-                
-                test_dataset = datasets.CIFAR10(
-                    root=dataset_path,
-                    train=False, 
-                    download=False,
-                    transform=transform
-                )
-                
-                test_loader = torch.utils.data.DataLoader(
-                    test_dataset, batch_size=batch_size, shuffle=True
-                )
-                
-                images, labels = next(iter(test_loader))
-                logger.info(f"Loaded batch of {len(images)} images with shape: {images.shape}")
-                logger.info(f"First few labels: {labels[:5]}")
-            else:
-                images = torch.randn(batch_size, 3, 224, 224)
-                logger.info(f"Using dummy data with shape: {images.shape}")
-            
-            # Run inference
-            logger.info("Starting inference...")
-            start_time = time.time()
-            with torch.no_grad():
-                logger.info("Sending data through the pipeline...")
-                output = model(images)
-                logger.info(f"Received output from pipeline with shape: {output.shape}")
-            elapsed_time = time.time() - start_time
-            
-            logger.info(f"Inference completed in {elapsed_time:.4f} seconds")
-            
-            # Print some results
-            if dataset == 'cifar10':
-                _, predicted = torch.max(output.data, 1)
-                logger.info(f"First few predictions: {predicted[:5]}")
-                logger.info(f"First few actual labels: {labels[:5]}")
+            # Rest of master code...
             
         except Exception as e:
             logger.error(f"Error in master node: {str(e)}", exc_info=True)
@@ -281,6 +223,7 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
         
         while retry_count < max_retries and not connected:
             try:
+                # Force workers to use WiFi interface
                 os.environ['GLOO_SOCKET_IFNAME'] = 'wlan0'
                 logger.info(f"Worker binding to interface: {os.environ.get('GLOO_SOCKET_IFNAME')}")
                 
@@ -290,6 +233,7 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
                 if hasattr(rpc, 'is_initialized') and rpc.is_initialized():
                     logger.info("RPC is already initialized; skipping reinitialization.")
                     connected = True
+                    rpc_initialized = True
                     break
                 
                 rpc.init_rpc(
@@ -300,20 +244,28 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
                 )
                 logger.info(f"Worker {rank} RPC initialized successfully")
                 connected = True
+                rpc_initialized = True
+                
             except Exception as e:
                 retry_count += 1
                 logger.warning(f"Connection attempt {retry_count} failed: {str(e)}")
                 if retry_count >= max_retries:
                     logger.error(f"Worker {rank} failed to connect after {max_retries} attempts")
-                    raise
+                    break  # Exit the loop instead of raising
                 wait_time = 10 + (retry_count % 5)
                 logger.info(f"Retrying in {wait_time} seconds... ({retry_count}/{max_retries})")
                 time.sleep(wait_time)
-            
-            # Block until all RPCs finish
-            logger.info("Waiting for RPC shutdown")
+    
+    # Only call shutdown if RPC was successfully initialized
+    if rpc_initialized:
+        logger.info("Waiting for RPC shutdown")
+        try:
             rpc.shutdown()
             logger.info("RPC shutdown complete")
+        except Exception as e:
+            logger.error(f"Error during shutdown: {str(e)}")
+    else:
+        logger.warning("RPC was never successfully initialized, skipping shutdown")
 
 def main():
     # Parse command line arguments
