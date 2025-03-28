@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
 
+# Disable PyTorch's SIMD optimization for Raspberry Pi compatibility
+import os
+os.environ['ATEN_CPU_CAPABILITY'] = ''
+
 import os
 import time
 import torch
@@ -16,9 +20,10 @@ import argparse
 from typing import List, Tuple, Dict, Optional
 
 # Import available lightweight models
-from models.mobilenetv2.model import MobileNetV2
-from models.squeezenet.model import SqueezeNet
-from models.efficientnet_b0.model import EfficientNetB0
+#from models.mobilenetv2.model import MobileNetV2
+#from models.squeezenet.model import SqueezeNet
+#from models.efficientnet_b0.model import EfficientNetB0
+import torchvision.models as torchvision_models
 
 # Base class for model shards
 class ModelShardBase(nn.Module):
@@ -40,12 +45,13 @@ class ModelShardBase(nn.Module):
 
 # First half of MobileNetV2
 class MobileNetV2Shard1(ModelShardBase):
-    def __init__(self, device, num_classes=1000):
+    def __init__(self, device, num_classes=10):
         super(MobileNetV2Shard1, self).__init__(device)
         
         # Create complete model then extract first half
         #TODO add changes for pretrained models on pytorch library
-        complete_model = MobileNetV2(num_classes=num_classes)
+        #complete_model = MobileNetV2(num_classes=num_classes)
+        complete_model = torchvision_models.mobilenet_v2(num_classes=num_classes)
         
         # First shard includes the features up to halfway point
         features = complete_model.features
@@ -62,11 +68,13 @@ class MobileNetV2Shard1(ModelShardBase):
 
 # Second half of MobileNetV2
 class MobileNetV2Shard2(ModelShardBase):
-    def __init__(self, device, num_classes=1000):
+    def __init__(self, device, num_classes=10):
         super(MobileNetV2Shard2, self).__init__(device)
         
         # Create complete model then extract second half
-        complete_model = MobileNetV2(num_classes=num_classes)
+        #complete_model = MobileNetV2(num_classes=num_classes)
+        complete_model = torchvision_models.mobilenet_v2(num_classes=num_classes)
+
         
         # Extract the second half of features and the classifier
         features = complete_model.features
@@ -155,6 +163,9 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
     """
     Main function to run distributed inference
     """
+
+    load_dotenv()
+
     # Get master IP from .env file
     master_ip = os.getenv('MASTER_IP', 'localhost')
     master_port = os.getenv('MASTER_PORT', '55555')
@@ -217,7 +228,7 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
         # Time the inference
         start_time = time.time()
         with torch.no_grad():
-            output = model(dummy_input)
+            output = model(images)
         elapsed_time = time.time() - start_time
         
         print(f"Inference time: {elapsed_time:.4f} seconds")
