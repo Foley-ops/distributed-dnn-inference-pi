@@ -48,7 +48,7 @@ class MobileNetV2Shard1(ModelShardBase):
         
         # Use torchvision's MobileNetV2
         # complete_model = torchvision_models.mobilenet_v2(num_classes=num_classes)
-        complete_model = torchvision_models.mobilenet_v2(pretrained=True, num_classes=num_classes)
+        complete_model = torchvision_models.mobilenet_v2(pretrained=True)
 
         # adjust number of output classes if needed 
         if num_classes != 1000: 
@@ -76,7 +76,7 @@ class MobileNetV2Shard2(ModelShardBase):
         
         # Use torchvision's MobileNetV2
         # complete_model = torchvision_models.mobilenet_v2(num_classes=num_classes)
-        complete_model = torchvision_models.mobilenet_v2(pretrained=True, num_classes=num_classes)
+        complete_model = torchvision_models.mobilenet_v2(pretrained=True)
 
         # adjust number of output classes if needed 
         if num_classes != 1000: 
