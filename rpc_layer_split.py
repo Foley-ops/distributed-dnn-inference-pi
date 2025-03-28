@@ -182,44 +182,100 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
     os.environ['MASTER_PORT'] = master_port
     
     if rank == 0:  # Only on master node
-        os.environ['GLOO_SOCKET_IFNAME'] = 'enp6s0'
+        # Specify the interface with the master node IP address
+        os.environ['GLOO_SOCKET_IFNAME'] = 'enp6s0'  # Using your wired interface
+        os.environ['TENSORPIPE_SOCKET_IFADDR'] = '0.0.0.0'
         logger.info(f"Set GLOO_SOCKET_IFNAME to enp6s0 for binding")
     else:  # Only on worker nodes
-        os.environ['GLOO_SOCKET_IFNAME'] = 'wlan0'
+        # For WiFi connections on Raspberry Pis
+        os.environ['GLOO_SOCKET_IFNAME'] = 'wlan0'  # Typical WiFi interface name on Pis
         logger.info(f"Set GLOO_SOCKET_IFNAME to bind to WiFi interface")
     
     # Flag to track if RPC was successfully initialized
     rpc_initialized = False
     
-    # Use the explicit store method
-    store = rpc.TcpStore(
-        host=master_addr if rank != 0 else "0.0.0.0",
-        port=int(master_port),
-        is_master=(rank == 0),
-        timeout=timedelta(seconds=120)
-    )
-    
     if rank == 0:  # Master node
         logger.info("Initializing master node")
         try:
-            # Initialize RPC with explicit store
+            # Create a more explicit RPC backend options
+            rpc_backend_options = rpc.TensorPipeRpcBackendOptions(
+                num_worker_threads=4,
+                rpc_timeout=120,
+                _transports=["uv"],  # Force using UV transport only
+                init_method=f"tcp://0.0.0.0:{master_port}"  # Explicit init method
+            )
+            
+            logger.info(f"Master using explicit init_method: tcp://0.0.0.0:{master_port}")
+            
+            # Initialize RPC for master
             rpc.init_rpc(
                 "master",
                 rank=rank,
                 world_size=world_size,
-                backend=rpc.BackendType.PROCESS_GROUP,
-                rpc_backend_options=rpc.ProcessGroupRpcBackendOptions(
-                    init_method=f"tcp://0.0.0.0:{master_port}",
-                    _transports=["gloo"],
-                    process_group_timeout=timedelta(seconds=120),
-                    num_send_recv_threads=4,
-                    store=store
-                )
+                rpc_backend_options=rpc_backend_options
             )
             logger.info("Master RPC initialized successfully")
             rpc_initialized = True
             
-            # Rest of master code...
+            # Define worker names
+            workers = [f"worker{i}" for i in range(1, world_size)]
+            logger.info(f"Setting up model with workers: {workers}")
+            
+            # Create distributed model
+            model = DistributedModel(
+                model_type=model_type,
+                num_splits=num_micro_batches,
+                workers=workers,
+                num_classes=num_classes
+            )
+            logger.info("Distributed model created successfully")
+            
+            # Load data
+            logger.info(f"Loading {dataset} dataset")
+            if dataset == 'cifar10':
+                transform = transforms.Compose([
+                    transforms.ToTensor(),
+                    transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+                    transforms.Resize((224, 224))
+                ])
+                
+                dataset_path = os.path.expanduser('~/datasets/cifar10')
+                logger.info(f"Loading CIFAR-10 from: {dataset_path}")
+                
+                test_dataset = datasets.CIFAR10(
+                    root=dataset_path,
+                    train=False, 
+                    download=False,
+                    transform=transform
+                )
+                
+                test_loader = torch.utils.data.DataLoader(
+                    test_dataset, batch_size=batch_size, shuffle=True
+                )
+                
+                images, labels = next(iter(test_loader))
+                logger.info(f"Loaded batch of {len(images)} images with shape: {images.shape}")
+                logger.info(f"First few labels: {labels[:5]}")
+            else:
+                images = torch.randn(batch_size, 3, 224, 224)
+                logger.info(f"Using dummy data with shape: {images.shape}")
+            
+            # Run inference
+            logger.info("Starting inference...")
+            start_time = time.time()
+            with torch.no_grad():
+                logger.info("Sending data through the pipeline...")
+                output = model(images)
+                logger.info(f"Received output from pipeline with shape: {output.shape}")
+            elapsed_time = time.time() - start_time
+            
+            logger.info(f"Inference completed in {elapsed_time:.4f} seconds")
+            
+            # Print some results
+            if dataset == 'cifar10':
+                _, predicted = torch.max(output.data, 1)
+                logger.info(f"First few predictions: {predicted[:5]}")
+                logger.info(f"First few actual labels: {labels[:5]}")
             
         except Exception as e:
             logger.error(f"Error in master node: {str(e)}", exc_info=True)
@@ -227,26 +283,39 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
     else:  # Workers
         logger.info(f"Initializing worker node with rank {rank}")
         retry_count = 0
-        max_retries = 30
+        max_retries = 30  # More retries
         connected = False
         
         while retry_count < max_retries and not connected:
             try:
+                # Force workers to use WiFi interface
+                os.environ['GLOO_SOCKET_IFNAME'] = 'wlan0'
+                logger.info(f"Worker binding to interface: {os.environ.get('GLOO_SOCKET_IFNAME')}")
+                
+                # Create a more explicit RPC backend options
+                rpc_backend_options = rpc.TensorPipeRpcBackendOptions(
+                    num_worker_threads=4,
+                    rpc_timeout=120,
+                    _transports=["uv"],  # Force using UV transport only
+                    init_method=f"tcp://{master_addr}:{master_port}"  # Explicit init method
+                )
+                
+                logger.info(f"Worker using explicit init_method: tcp://{master_addr}:{master_port}")
+                
                 logger.info(f"Worker {rank} attempt {retry_count+1} to connect to master...")
                 
-                # Initialize RPC with explicit store
+                # Check if RPC is already initialized; if so, skip reinitialization
+                if hasattr(rpc, 'is_initialized') and rpc.is_initialized():
+                    logger.info("RPC is already initialized; skipping reinitialization.")
+                    connected = True
+                    rpc_initialized = True
+                    break
+                
                 rpc.init_rpc(
                     f"worker{rank}",
                     rank=rank,
                     world_size=world_size,
-                    backend=rpc.BackendType.PROCESS_GROUP,
-                    rpc_backend_options=rpc.ProcessGroupRpcBackendOptions(
-                        init_method=f"tcp://{master_addr}:{master_port}",
-                        _transports=["gloo"],
-                        process_group_timeout=timedelta(seconds=120),
-                        num_send_recv_threads=4,
-                        store=store
-                    )
+                    rpc_backend_options=rpc_backend_options
                 )
                 logger.info(f"Worker {rank} RPC initialized successfully")
                 connected = True
@@ -257,10 +326,26 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
                 logger.warning(f"Connection attempt {retry_count} failed: {str(e)}")
                 if retry_count >= max_retries:
                     logger.error(f"Worker {rank} failed to connect after {max_retries} attempts")
-                    break
+                    break  # Exit the loop instead of raising
                 wait_time = 10 + (retry_count % 5)
                 logger.info(f"Retrying in {wait_time} seconds... ({retry_count}/{max_retries})")
                 time.sleep(wait_time)
+
+    if not connected and rank != 0:
+        logger.error("Worker failed to connect to master node")
+        # Exit with a non-zero code so the shell script knows to retry
+        sys.exit(1)
+    
+    # Only call shutdown if RPC was successfully initialized
+    if rpc_initialized:
+        logger.info("Waiting for RPC shutdown")
+        try:
+            rpc.shutdown()
+            logger.info("RPC shutdown complete")
+        except Exception as e:
+            logger.error(f"Error during shutdown: {str(e)}")
+    else:
+        logger.warning("RPC was never successfully initialized, skipping shutdown")
 
 def main():
     # Parse command line arguments
