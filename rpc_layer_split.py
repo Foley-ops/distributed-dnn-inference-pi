@@ -138,6 +138,15 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
     os.environ['MASTER_ADDR'] = master_addr
     os.environ['MASTER_PORT'] = master_port
     
+    if rank == 0:  # Only on master node
+        # Specify the interface with the master node IP address
+        os.environ['GLOO_SOCKET_IFNAME'] = 'enp6s0'  # Using your wired interface
+        logger.info(f"Set GLOO_SOCKET_IFNAME to enp6s0 for binding")
+    else:  # Only on worker nodes
+        # For WiFi connections on Raspberry Pis
+        os.environ['GLOO_SOCKET_IFNAME'] = 'wlan0'  # Typical WiFi interface name on Pis
+        logger.info(f"Set GLOO_SOCKET_IFNAME to bind to WiFi interface")
+
     # Define RPC names for workers
     rpc_backend_options = rpc.TensorPipeRpcBackendOptions(
         num_worker_threads=4,
