@@ -9,6 +9,9 @@ from torch.distributed.rpc import RRef
 import torch.optim as optim
 import torch.distributed.autograd as dist_autograd
 from torch.distributed.optim import DistributedOptimizer
+import torchvision.datasets as datasets
+import torchvision.transforms as transforms
+from dotenv import load_dotenv
 import argparse
 from typing import List, Tuple, Dict, Optional
 
@@ -152,13 +155,17 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
     """
     Main function to run distributed inference
     """
+    # Get master IP from .env file
+    master_ip = os.getenv('MASTER_IP', 'localhost')
+    master_port = os.getenv('MASTER_PORT', '55555')
+    
     # Initialize RPC framework
-    os.environ['MASTER_ADDR'] = 'localhost'
-    os.environ['MASTER_PORT'] = '29500'
+    os.environ['MASTER_ADDR'] = master_ip
+    os.environ['MASTER_PORT'] = master_port
     
     # Define RPC names for workers
     rpc_backend_options = rpc.TensorPipeRpcBackendOptions(
-        num_worker_threads=16, #TODO is this per device or is it shared among all devices?
+        num_worker_threads=4, #num threads per worker
         rpc_timeout=0  # infinity
     )
     
@@ -181,8 +188,31 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
             num_classes=num_classes
         )
         
-        # Load test data (mocked for now)
-        dummy_input = torch.randn(batch_size, 3, 224, 224)
+        # Load CIFAR-10 data if specified
+        if dataset == 'cifar10':
+            transform = transforms.Compose([
+                transforms.ToTensor(),
+                transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+                transforms.Resize((224, 224))  # Resize to match model input size
+            ])
+            
+            test_dataset = datasets.CIFAR10(
+                root='~/datasets/cifar10',  # Using your existing dataset path
+                train=False, 
+                download=False,  # Dataset already exists
+                transform=transform
+            )
+            
+            # Select a batch for testing
+            test_loader = torch.utils.data.DataLoader(
+                test_dataset, batch_size=batch_size, shuffle=True
+            )
+            
+            # Get a batch of images
+            images, _ = next(iter(test_loader))
+        else:
+            # Fall back to dummy data if dataset not specified
+            images = torch.randn(batch_size, 3, 224, 224)
         
         # Time the inference
         start_time = time.time()
@@ -214,9 +244,9 @@ def main():
     parser.add_argument("--model", type=str, default="mobilenetv2", 
                         choices=["mobilenetv2", "squeezenet", "efficientnet_b0"], 
                         help="Model architecture")
-    parser.add_argument("--batch-size", type=int, default=64, help="Batch size")
+    parser.add_argument("--batch-size", type=int, default=16, help="Batch size")
     parser.add_argument("--micro-batches", type=int, default=4, help="Number of micro-batches for pipeline")
-    parser.add_argument("--num-classes", type=int, default=1000, help="Number of output classes")
+    parser.add_argument("--num-classes", type=int, default=10, help="Number of output classes") # 10 for CIFAR-10
     parser.add_argument("--dataset", type=str, default="cifar10", 
                         choices=["cifar10", "mnist"],
                         help="Dataset to use for inference")
