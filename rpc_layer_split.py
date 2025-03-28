@@ -183,6 +183,7 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
     if rank == 0:  # Only on master node
         # Specify the interface with the master node IP address
         os.environ['GLOO_SOCKET_IFNAME'] = 'enp6s0'  # Using your wired interface
+        os.environ['TENSORPIPE_SOCKET_IFADDR'] = '0.0.0.0'
         logger.info(f"Set GLOO_SOCKET_IFNAME to enp6s0 for binding")
     else:  # Only on worker nodes
         # For WiFi connections on Raspberry Pis
