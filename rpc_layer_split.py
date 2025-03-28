@@ -17,6 +17,15 @@ from dotenv import load_dotenv
 from typing import List
 
 # -------------------------------------------------------------------
+# Explicit network configuration:
+# Set master IP and port; ensure MASTER_ADDR is reachable from workers.
+MASTER_IP = "10.100.117.1"       # Master node's enp6s0 IP.
+MASTER_PORT = "29555"            # Chosen port for RPC.
+
+os.environ["MASTER_ADDR"] = MASTER_IP
+os.environ["MASTER_PORT"] = MASTER_PORT
+
+# -------------------------------------------------------------------
 # Base class for model shards
 class ModelShardBase(nn.Module):
     def __init__(self, device):
