@@ -108,8 +108,8 @@ class DistributedModel(nn.Module):
         # Map model_type to appropriate shard classes
         shard_classes = {
             'mobilenetv2': (MobileNetV2Shard1, MobileNetV2Shard2),
-            'squeezenet': (None, None),  # Replace with actual implementations
-            'efficientnet_b0': (None, None)  # Replace with actual implementations
+            #'squeezenet': (None, None),  # Replace with actual implementations
+            #'efficientnet_b0': (None, None)  # Replace with actual implementations
         }
         
         if model_type not in shard_classes:
@@ -253,7 +253,7 @@ def main():
     parser.add_argument("--rank", type=int, default=0, help="Rank of current process")
     parser.add_argument("--world-size", type=int, default=3, help="World size (1 master + N workers)")
     parser.add_argument("--model", type=str, default="mobilenetv2", 
-                        choices=["mobilenetv2", "squeezenet", "efficientnet_b0"], 
+                        choices=["mobilenetv2"], #choices=["mobilenetv2", "squeezenet", "efficientnet_b0"]
                         help="Model architecture")
     parser.add_argument("--batch-size", type=int, default=16, help="Batch size")
     parser.add_argument("--micro-batches", type=int, default=4, help="Number of micro-batches for pipeline")
