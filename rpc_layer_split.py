@@ -48,7 +48,16 @@ class MobileNetV2Shard1(ModelShardBase):
         
         # Use torchvision's MobileNetV2
         # complete_model = torchvision_models.mobilenet_v2(num_classes=num_classes)
-        complete_model = torchvision_models.mobilenet_v2(pretrained=True)
+        # complete_model = torchvision_models.mobilenet_v2(pretrained=True)
+        complete_model = torchvision_models.mobilenet_v2(weights=None)  
+
+        # load the saved state dictionary, ensuring it is mapped to the correct device
+        state_dict = torch.load("mobilenetv2_cifar10.pth", map_location=torch.device(device), weights_only=True) # model path is hard coded for now 
+        complete_model.load_state_dict(state_dict)
+
+        # set the model to evaluation mode
+        complete_model.eval()
+
 
         # adjust number of output classes if needed 
         if num_classes != 1000: 
