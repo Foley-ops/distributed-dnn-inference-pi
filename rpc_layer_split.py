@@ -53,15 +53,14 @@ class MobileNetV2Shard1(ModelShardBase):
 
         # load the saved state dictionary, ensuring it is mapped to the correct device
         state_dict = torch.load("mobilenetv2_cifar10.pth", map_location=torch.device(device)) # model path is hard coded for now 
-        complete_model.load_state_dict(state_dict)
-
-        # set the model to evaluation mode
-        complete_model.eval()
-
 
         # adjust number of output classes if needed 
         if num_classes != 1000: 
             complete_model.classifier[1] = nn.Linear(complete_model.last_channel, num_classes)
+
+        # load the saved weights into complete_model    
+        complete_model.load_state_dict(state_dict)
+        complete_model.eval()
 
         # First shard includes the features up to halfway point
         features = complete_model.features
@@ -87,12 +86,14 @@ class MobileNetV2Shard2(ModelShardBase):
         # complete_model = torchvision_models.mobilenet_v2(num_classes=num_classes)
         complete_model = torchvision_models.mobilenet_v2(weights=None)
         state_dict = torch.load("mobilenetv2_cifar10.pth", map_location=torch.device(device))
-        complete_model.load_state_dict(state_dict)
-        complete_model.eval()
 
         # adjust number of output classes if needed 
         if num_classes != 1000: 
             complete_model.classifier[1] = nn.Linear(complete_model.last_channel, num_classes)
+
+        # load the saved weights into complete_model
+        complete_model.load_state_dict(state_dict)
+        complete_model.eval()
 
         # Extract the second half of features and the classifier
         features = complete_model.features
