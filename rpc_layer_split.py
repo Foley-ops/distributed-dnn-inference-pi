@@ -286,11 +286,25 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
             # Run inference
             logger.info("Starting inference...")
             start_time = time.time()
+            
+            num_batches = 3 # hard-coded temporarily 
+
             with torch.no_grad():
-                logger.info("Sending data through the pipeline...")
-                output = model(images)
-                logger.info(f"Received output from pipeline with shape: {output.shape}")
+                for i, (images, labels) in enumerate(test_loader):
+                    if i == num_batches:
+                        break
+                    logger.info(f"Running inference on batch {i+1}/{num_batches} with shape: {images.shape}")
+                    output = model(images)
+                    logger.info(f"Received output shape: {output.shape}")
+
+                    # log the predicted vs actual labels
+                    _, predicted = torch.max(output.data, 1)
+                    logger.info(f"Predicted: {predicted[:5]} | Actual: {labels[:5]}")
+                    total_images += len(images)
+
             elapsed_time = time.time() - start_time
+            logger.info(f"Inference completed on {total_images} images.")
+
             
             logger.info(f"Inference completed in {elapsed_time:.4f} seconds")
             
