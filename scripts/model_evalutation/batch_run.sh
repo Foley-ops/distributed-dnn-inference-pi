@@ -8,7 +8,7 @@
 
 # Set paths and parameters
 SCRIPT_PATH="./model_evaluation.py"
-OUTPUT_DIR="./results/$(date +%Y%m%d_%H%M%S)"
+OUTPUT_DIR="$(eval echo ~/datasets/single_device_results/$(date +%Y%m%d_%H%M%S))"
 LOG_DIR="${OUTPUT_DIR}/logs"
 REPORT_PATH="${OUTPUT_DIR}/comparative_report.csv"
 

@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 #############################################
 
 # Paths
-DATA_ROOT = os.path.join(os.getcwd(), "datasets")
+DATA_ROOT = os.path.expanduser("~/datasets")
 IMAGENET_PATH = os.path.join(DATA_ROOT, "imagenet")
 VOC_PATH = os.path.join(DATA_ROOT, "voc2012")
 COCO_PATH = os.path.join(DATA_ROOT, "coco")
@@ -47,7 +47,10 @@ COCO_PATH = os.path.join(DATA_ROOT, "coco")
 os.makedirs(DATA_ROOT, exist_ok=True)
 
 # Results directory
-RESULTS_DIR = os.path.join(os.getcwd(), "results")
+RESULTS_DIR = os.path.join(DATA_ROOT, "single_device_results")
+
+# Create results directory if it doesn't exist
+os.makedirs(RESULTS_DIR, exist_ok=True)
 
 # Device settings
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
