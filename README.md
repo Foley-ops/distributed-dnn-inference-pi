@@ -60,6 +60,11 @@ distributed-dnn-inference-pi/
 │   └── mnist/
 ├── scripts/                     # Utility scripts for performance metrics and setup
 │   └── metrics_collection.py
+│   ├── model_evaluation/           # New subdirectory for evaluation scripts
+│   │   ├── model_evaluation.py     # Main script
+│   │   ├── custom_model_example.py # Extension example  
+│   │   ├── batch_run.sh           # Batch execution script
+│   │   └── README.md              
 └── docs/                        # Documentation and instructions
     ├── SETUP.md                 # How to set up Raspberry Pi devices and environment
     └── USAGE.md                 # How to run inference and collect metrics
