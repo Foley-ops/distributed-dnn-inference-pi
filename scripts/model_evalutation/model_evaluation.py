@@ -44,9 +44,8 @@ VOC_PATH = os.path.join(DATA_ROOT, "voc2012")
 COCO_PATH = os.path.join(DATA_ROOT, "coco")
 MODEL_PATH = os.path.join(DATA_ROOT, "pretrained_models")
 
-# Create directories if they don't exist
-os.makedirs(DATA_ROOT, exist_ok=True)
-os.makedirs(MODEL_PATH, exist_ok=True)
+# Configure PyTorch's model download directory
+os.environ['TORCH_HOME'] = MODEL_PATH
 
 # Results directory
 RESULTS_DIR = os.path.join(DATA_ROOT, "single_device_results")
@@ -375,10 +374,7 @@ class MobileNetV2Evaluator(ModelEvaluator):
     
     def _create_model(self):
         logger.info("Loading pretrained MobileNetV2 model...")
-        # Set model weights download location
-        weights = tv_models.MobileNet_V2_Weights.IMAGENET1K_V1
-        weights._download_to(MODEL_PATH)
-        return tv_models.mobilenet_v2(weights=weights)
+        return tv_models.mobilenet_v2(weights=tv_models.MobileNet_V2_Weights.IMAGENET1K_V1)
     
     def _create_data_loader(self):
         transform = transforms.Compose([
@@ -403,9 +399,7 @@ class DeepLabV3Evaluator(ModelEvaluator):
     def _create_model(self):
         logger.info("Loading pretrained DeepLabV3 model...")
         # DeepLabV3 with ResNet-50 backbone
-        weights = tv_models.segmentation.DeepLabV3_ResNet50_Weights.COCO_WITH_VOC_LABELS_V1
-        weights._download_to(MODEL_PATH)
-        return tv_models.segmentation.deeplabv3_resnet50(weights=weights)
+        return tv_models.segmentation.deeplabv3_resnet50(weights=tv_models.segmentation.DeepLabV3_ResNet50_Weights.COCO_WITH_VOC_LABELS_V1)
     
     def _create_data_loader(self):
         transform = transforms.Compose([
@@ -466,9 +460,7 @@ class InceptionEvaluator(ModelEvaluator):
     
     def _create_model(self):
         logger.info("Loading pretrained Inception v3 model...")
-        weights = tv_models.Inception_V3_Weights.IMAGENET1K_V1
-        weights._download_to(MODEL_PATH)
-        return tv_models.inception_v3(weights=weights)
+        return tv_models.inception_v3(weights=tv_models.Inception_V3_Weights.IMAGENET1K_V1)
     
     def _create_data_loader(self):
         # Inception v3 requires 299x299 input
@@ -501,9 +493,7 @@ class ResNet18Evaluator(ModelEvaluator):
     
     def _create_model(self):
         logger.info("Loading pretrained ResNet18 model...")
-        weights = tv_models.ResNet18_Weights.IMAGENET1K_V1
-        weights._download_to(MODEL_PATH)
-        return tv_models.resnet18(weights=weights)
+        return tv_models.resnet18(weights=tv_models.ResNet18_Weights.IMAGENET1K_V1)
     
     def _create_data_loader(self):
         transform = transforms.Compose([
@@ -527,9 +517,7 @@ class AlexNetEvaluator(ModelEvaluator):
     
     def _create_model(self):
         logger.info("Loading pretrained AlexNet model...")
-        weights = tv_models.AlexNet_Weights.IMAGENET1K_V1
-        weights._download_to(MODEL_PATH)
-        return tv_models.alexnet(weights=weights)
+        return tv_models.alexnet(weights=tv_models.AlexNet_Weights.IMAGENET1K_V1)
     
     def _create_data_loader(self):
         transform = transforms.Compose([
@@ -552,9 +540,7 @@ class VGG16Evaluator(ModelEvaluator):
     
     def _create_model(self):
         logger.info("Loading pretrained VGG16 model...")
-        weights = tv_models.VGG16_Weights.IMAGENET1K_V1
-        weights._download_to(MODEL_PATH)
-        return tv_models.vgg16(weights=weights)
+        return tv_models.vgg16(weights=tv_models.VGG16_Weights.IMAGENET1K_V1)
     
     def _create_data_loader(self):
         transform = transforms.Compose([
@@ -582,9 +568,7 @@ class SqueezeNetEvaluator(ModelEvaluator):
     
     def _create_model(self):
         logger.info("Loading pretrained SqueezeNet model...")
-        weights = tv_models.SqueezeNet1_1_Weights.IMAGENET1K_V1
-        weights._download_to(MODEL_PATH)
-        return tv_models.squeezenet1_1(weights=weights)
+        return tv_models.squeezenet1_1(weights=tv_models.SqueezeNet1_1_Weights.IMAGENET1K_V1)
     
     def _create_data_loader(self):
         transform = transforms.Compose([
