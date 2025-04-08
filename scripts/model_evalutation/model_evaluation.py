@@ -645,7 +645,7 @@ def parse_args():
     parser.add_argument("--output-dir", type=str, default=RESULTS_DIR,
                         help=f"Directory to save results (default: {RESULTS_DIR})")
     
-    parser.add_argument("--output-format", type=str, default="json", choices=["json", "csv"],
+    parser.add_argument("--output-format", type=str, default="csv", choices=["json", "csv"],
                         help="Format of output files (default: json)")
     
     parser.add_argument("--aggregate", action="store_true", 
