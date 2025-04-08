@@ -340,7 +340,7 @@ class ModelEvaluator:
         
         return self.results
     
-    def save_results(self, output_dir=RESULTS_DIR, format="json"):
+    def save_results(self, output_dir=RESULTS_DIR, format="csv"):
         """Save the evaluation results."""
         if not hasattr(self, 'results'):
             raise ValueError("No results to save. Run evaluation first.")
