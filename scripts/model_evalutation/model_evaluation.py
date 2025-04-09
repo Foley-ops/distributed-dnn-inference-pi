@@ -208,26 +208,29 @@ class ModelEvaluator:
         raise NotImplementedError("Subclass must implement _create_base_model()")
     
     def _create_model(self):
-        """Create, load the fine-tuned model if available, and return the model."""
-        logger.info(f"Loading fine-tuned {self.model_name} model if available...")
-        model_path = os.path.join(FINE_TUNED_MODEL_PATH, f"{self.model_name}_finetuned.pth")
+        """Create and load the fine-tuned model if available."""
+        logger.info(f"Loading model for {self.model_name}...")
         
         # Create base model first
         base_model = self._create_base_model()
         
-        # Load fine-tuned weights if available
+        # FIRST adapt the model to the correct number of classes
+        adapted_model = self._adapt_model_to_dataset(base_model, self.num_classes)
+        
+        # THEN try to load fine-tuned weights
+        model_path = os.path.join(FINE_TUNED_MODEL_PATH, f"{self.model_name}_finetuned.pth")
         if os.path.exists(model_path):
             try:
                 checkpoint = torch.load(model_path, map_location=self.device)
-                base_model.load_state_dict(checkpoint['model_state_dict'])
+                adapted_model.load_state_dict(checkpoint['model_state_dict'])
                 logger.info(f"Loaded fine-tuned model with accuracy: {checkpoint.get('accuracy', 'unknown')}")
             except Exception as e:
                 logger.warning(f"Error loading fine-tuned model: {e}")
-                logger.warning("Using pretrained model instead.")
+                logger.warning("Using adapted pretrained model.")
         else:
-            logger.warning(f"Fine-tuned model not found at {model_path}. Using pretrained model.")
+            logger.warning(f"Fine-tuned model not found at {model_path}. Using adapted pretrained model.")
         
-        return base_model
+        return adapted_model
     
     def _adapt_model_to_dataset(self, model, num_classes):
         """Adapt the model's classifier to match the target dataset's number of classes."""
@@ -239,7 +242,7 @@ class ModelEvaluator:
         raise NotImplementedError("Subclass must implement _create_data_loader()")
     
     def __init__(self, model_name, batch_size=DEFAULT_BATCH_SIZE, 
-                 num_workers=DEFAULT_NUM_WORKERS, num_inferences=DEFAULT_NUM_INFERENCES):
+                num_workers=DEFAULT_NUM_WORKERS, num_inferences=DEFAULT_NUM_INFERENCES):
         """
         Initialize the model evaluator.
         
@@ -262,9 +265,12 @@ class ModelEvaluator:
         # Get the number of classes from the dataset
         self.num_classes = self._get_num_classes()
         
-        # Create model, adapt it to the dataset, and move to device
-        base_model = self._create_model()
-        self.model = self._adapt_model_to_dataset(base_model, self.num_classes)
+        # Create model (this now includes adaptation and loading fine-tuned weights)
+        self.model = self._create_model()
+        
+        # No need to adapt again - model is already adapted in _create_model
+        # Remove: self.model = self._adapt_model_to_dataset(base_model, self.num_classes)
+        
         self.model.eval()
         self.model.to(self.device)
         
@@ -617,25 +623,19 @@ class AlexNetEvaluator(ModelEvaluator):
         return model
     
     def _create_data_loader(self):
-        transform = transforms.Compose([
-            transforms.Resize(224),
-            transforms.CenterCrop(224),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-        ])
-        
-        # Try Oxford-IIIT Pet dataset first (better for AlexNet)
-        try:
-            logger.info("Loading Oxford-IIIT Pet dataset for AlexNet...")
-            dataset = datasets.OxfordIIITPet(root=DATA_ROOT, split='test', download=True, transform=transform)
-        except Exception as e:
-            logger.warning(f"Error loading Oxford-IIIT Pet: {e}")
-            # Fall back to CIFAR-10
-            logger.warning("Falling back to CIFAR-10")
+            transform = transforms.Compose([
+                transforms.Resize(224),
+                transforms.CenterCrop(224),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+            ])
+            
+            # Use CIFAR-10 directly to match fine-tuned model
+            logger.info("Loading CIFAR-10 dataset for AlexNet evaluation...")
             dataset = datasets.CIFAR10(root=DATA_ROOT, train=False, download=True, transform=transform)
-        
-        return DataLoader(dataset, batch_size=self.batch_size, shuffle=True, 
-                          num_workers=self.num_workers, pin_memory=True)
+            
+            return DataLoader(dataset, batch_size=self.batch_size, shuffle=True, 
+                            num_workers=self.num_workers, pin_memory=True)
 
 
 class VGG16Evaluator(ModelEvaluator):
@@ -660,19 +660,9 @@ class VGG16Evaluator(ModelEvaluator):
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ])
         
-        # Try Flowers dataset first
-        try:
-            logger.info("Loading Flowers102 dataset for VGG16...")
-            dataset = datasets.Flowers102(root=DATA_ROOT, split='test', download=True, transform=transform)
-        except Exception as e:
-            logger.warning(f"Error loading Flowers102: {e}")
-            try:
-                logger.info("Trying STL10 dataset...")
-                dataset = datasets.STL10(root=DATA_ROOT, split='test', download=True, transform=transform)
-            except Exception as e:
-                logger.warning(f"Error loading STL10: {e}")
-                logger.warning("Falling back to CIFAR-10")
-                dataset = datasets.CIFAR10(root=DATA_ROOT, train=False, download=True, transform=transform)
+        # Use CIFAR-10 directly to match fine-tuned model
+        logger.info("Loading CIFAR-10 dataset for VGG16 evaluation...")
+        dataset = datasets.CIFAR10(root=DATA_ROOT, train=False, download=True, transform=transform)
         
         return DataLoader(dataset, batch_size=self.batch_size, shuffle=True, 
                           num_workers=self.num_workers, pin_memory=True)
