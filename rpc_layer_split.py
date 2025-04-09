@@ -174,7 +174,7 @@ class DistributedModel(nn.Module):
         remote_params.extend(self.p2_rref.remote().parameter_rrefs().to_here())
         return remote_params
 
-def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, num_classes, dataset):
+def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, num_classes, dataset, num_batches):
     """
     Main function to run distributed inference
     """
@@ -290,7 +290,6 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
             logger.info("Starting inference...")
             start_time = time.time()
             
-            num_batches = 3 # hard-coded temporarily 
             total_images = 0
             
             with torch.no_grad():
@@ -402,6 +401,8 @@ def main():
     parser.add_argument("--dataset", type=str, default="cifar10", 
                         choices=["cifar10", "dummy"],
                         help="Dataset to use for inference")
+    parser.add_argument("--num-batches", type=int, default=3, help="Number of batches to run during inference")
+
     
     args = parser.parse_args()
     
@@ -413,7 +414,8 @@ def main():
         batch_size=args.batch_size,
         num_micro_batches=args.micro_batches,
         num_classes=args.num_classes,
-        dataset=args.dataset
+        dataset=args.dataset,
+        num_batches=args.num_batches
     )
 
 if __name__ == "__main__":
