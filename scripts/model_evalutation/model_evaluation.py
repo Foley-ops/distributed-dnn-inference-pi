@@ -45,26 +45,20 @@ COCO_PATH = os.path.join(DATA_ROOT, "coco")
 MODEL_PATH = os.path.join(DATA_ROOT, "pretrained_models")
 FINE_TUNED_MODEL_PATH = os.path.join(DATA_ROOT, "fine_tuned_models")
 
-# Configure PyTorch's model download directory
 os.environ['TORCH_HOME'] = MODEL_PATH
 
-# Results directory
 RESULTS_DIR = os.path.join(DATA_ROOT, "single_device_results")
-
-# Create results directory if it doesn't exist
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
-# Device settings
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 GPU_NAME = torch.cuda.get_device_name(0) if torch.cuda.is_available() else "None"
 
-# Evaluation settings
 DEFAULT_BATCH_SIZE = 16
 DEFAULT_NUM_WORKERS = 4
 DEFAULT_NUM_INFERENCES = 100
 DEFAULT_WARMUP_ITERATIONS = 10
 
-# Model names
+# Models
 AVAILABLE_MODELS = [
     "mobilenetv2", 
     "deeplabv3", 
@@ -807,7 +801,7 @@ def main():
             # Get the evaluator class for this model
             EvaluatorClass = get_evaluator_class(model_name)
             
-            # Create evaluator instance
+            # Create evaluator
             evaluator = EvaluatorClass(
                 model_name=model_name,
                 batch_size=args.batch_size,
@@ -815,13 +809,13 @@ def main():
                 num_inferences=args.num_inferences
             )
             
-            # Run evaluation
+            # Run eval
             results = evaluator.run_evaluation(warmup_iterations=args.warmup_iterations)
             
             # Save individual results
             evaluator.save_results(output_dir=args.output_dir, format=args.output_format)
             
-            # Store for aggregation if needed
+            # Store for aggregation
             all_results[model_name] = results
             
         except Exception as e:
@@ -829,7 +823,7 @@ def main():
             import traceback
             logger.error(traceback.format_exc())
     
-    # Aggregate results if requested
+    # Aggregate results
     if args.aggregate and all_results:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         
@@ -848,11 +842,9 @@ def main():
             with open(filename, 'w', newline='') as f:
                 writer = csv.writer(f)
                 
-                # Write header row with 'model_name' as the first column
                 header = ['model_name'] + sorted(k for k in all_keys if k != 'model_name')
                 writer.writerow(header)
                 
-                # Write a row for each model
                 for model_name, result in all_results.items():
                     row = [model_name] + [result.get(k, '') for k in header[1:]]
                     writer.writerow(row)
