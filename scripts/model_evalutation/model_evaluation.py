@@ -43,6 +43,7 @@ IMAGENET_PATH = os.path.join(DATA_ROOT, "imagenet")
 VOC_PATH = os.path.join(DATA_ROOT, "voc2012")
 COCO_PATH = os.path.join(DATA_ROOT, "coco")
 MODEL_PATH = os.path.join(DATA_ROOT, "pretrained_models")
+FINE_TUNED_MODEL_PATH = os.path.join(DATA_ROOT, "fine_tuned_models")
 
 # Configure PyTorch's model download directory
 os.environ['TORCH_HOME'] = MODEL_PATH
@@ -208,9 +209,31 @@ class MetricsCollector:
 class ModelEvaluator:
     """Base class for model evaluation."""
     
+    def _create_base_model(self):
+        """Create and return the base model. To be implemented by subclasses."""
+        raise NotImplementedError("Subclass must implement _create_base_model()")
+    
     def _create_model(self):
-        """Create and return the model. To be implemented by subclasses."""
-        raise NotImplementedError("Subclass must implement _create_model()")
+        """Create, load the fine-tuned model if available, and return the model."""
+        logger.info(f"Loading fine-tuned {self.model_name} model if available...")
+        model_path = os.path.join(FINE_TUNED_MODEL_PATH, f"{self.model_name}_finetuned.pth")
+        
+        # Create base model first
+        base_model = self._create_base_model()
+        
+        # Load fine-tuned weights if available
+        if os.path.exists(model_path):
+            try:
+                checkpoint = torch.load(model_path, map_location=self.device)
+                base_model.load_state_dict(checkpoint['model_state_dict'])
+                logger.info(f"Loaded fine-tuned model with accuracy: {checkpoint.get('accuracy', 'unknown')}")
+            except Exception as e:
+                logger.warning(f"Error loading fine-tuned model: {e}")
+                logger.warning("Using pretrained model instead.")
+        else:
+            logger.warning(f"Fine-tuned model not found at {model_path}. Using pretrained model.")
+        
+        return base_model
     
     def _adapt_model_to_dataset(self, model, num_classes):
         """Adapt the model's classifier to match the target dataset's number of classes."""
@@ -409,7 +432,7 @@ class ModelEvaluator:
 class MobileNetV2Evaluator(ModelEvaluator):
     """Evaluator for MobileNetV2."""
     
-    def _create_model(self):
+    def _create_base_model(self):
         logger.info("Loading pretrained MobileNetV2 model...")
         return tv_models.mobilenet_v2(weights=tv_models.MobileNet_V2_Weights.IMAGENET1K_V1)
     
@@ -439,7 +462,7 @@ class MobileNetV2Evaluator(ModelEvaluator):
 class DeepLabV3Evaluator(ModelEvaluator):
     """Evaluator for DeepLabV3."""
     
-    def _create_model(self):
+    def _create_base_model(self):
         logger.info("Loading pretrained DeepLabV3 model...")
         # DeepLabV3 with ResNet-50 backbone
         return tv_models.segmentation.deeplabv3_resnet50(weights=tv_models.segmentation.DeepLabV3_ResNet50_Weights.COCO_WITH_VOC_LABELS_V1)
@@ -507,7 +530,7 @@ class DeepLabV3Evaluator(ModelEvaluator):
 class InceptionEvaluator(ModelEvaluator):
     """Evaluator for Inception v3."""
     
-    def _create_model(self):
+    def _create_base_model(self):
         logger.info("Loading pretrained Inception v3 model...")
         return tv_models.inception_v3(weights=tv_models.Inception_V3_Weights.IMAGENET1K_V1)
     
@@ -558,7 +581,7 @@ class InceptionEvaluator(ModelEvaluator):
 class ResNet18Evaluator(ModelEvaluator):
     """Evaluator for ResNet18."""
     
-    def _create_model(self):
+    def _create_base_model(self):
         logger.info("Loading pretrained ResNet18 model...")
         return tv_models.resnet18(weights=tv_models.ResNet18_Weights.IMAGENET1K_V1)
     
@@ -588,7 +611,7 @@ class ResNet18Evaluator(ModelEvaluator):
 class AlexNetEvaluator(ModelEvaluator):
     """Evaluator for AlexNet."""
     
-    def _create_model(self):
+    def _create_base_model(self):
         logger.info("Loading pretrained AlexNet model...")
         return tv_models.alexnet(weights=tv_models.AlexNet_Weights.IMAGENET1K_V1)
     
@@ -624,7 +647,7 @@ class AlexNetEvaluator(ModelEvaluator):
 class VGG16Evaluator(ModelEvaluator):
     """Evaluator for VGG16."""
     
-    def _create_model(self):
+    def _create_base_model(self):
         logger.info("Loading pretrained VGG16 model...")
         return tv_models.vgg16(weights=tv_models.VGG16_Weights.IMAGENET1K_V1)
     
@@ -664,7 +687,7 @@ class VGG16Evaluator(ModelEvaluator):
 class SqueezeNetEvaluator(ModelEvaluator):
     """Evaluator for SqueezeNet."""
     
-    def _create_model(self):
+    def _create_base_model(self):
         logger.info("Loading pretrained SqueezeNet model...")
         return tv_models.squeezenet1_1(weights=tv_models.SqueezeNet1_1_Weights.IMAGENET1K_V1)
     
