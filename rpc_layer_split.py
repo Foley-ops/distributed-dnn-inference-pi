@@ -52,16 +52,15 @@ class MobileNetV2Shard1(ModelShardBase):
         complete_model = torchvision_models.mobilenet_v2(weights=None)  
 
         # load the saved state dictionary, ensuring it is mapped to the correct device
-        state_dict = torch.load("mobilenetv2_cifar10.pth", map_location=torch.device(device), weights_only=True) # model path is hard coded for now 
-        complete_model.load_state_dict(state_dict)
-
-        # set the model to evaluation mode
-        complete_model.eval()
-
+        state_dict = torch.load("mobilenetv2_cifar10.pth", map_location=torch.device(device)) # model path is hard coded for now 
 
         # adjust number of output classes if needed 
         if num_classes != 1000: 
             complete_model.classifier[1] = nn.Linear(complete_model.last_channel, num_classes)
+
+        # load the saved weights into complete_model    
+        complete_model.load_state_dict(state_dict)
+        complete_model.eval()
 
         # First shard includes the features up to halfway point
         features = complete_model.features
@@ -86,13 +85,15 @@ class MobileNetV2Shard2(ModelShardBase):
         # Use torchvision's MobileNetV2
         # complete_model = torchvision_models.mobilenet_v2(num_classes=num_classes)
         complete_model = torchvision_models.mobilenet_v2(weights=None)
-        state_dict = torch.load("mobilenetv2_cifar10.pth", map_location=torch.device(device), weights_only=True)
-        complete_model.load_state_dict(state_dict)
-        complete_model.eval()
+        state_dict = torch.load("mobilenetv2_cifar10.pth", map_location=torch.device(device))
 
         # adjust number of output classes if needed 
         if num_classes != 1000: 
             complete_model.classifier[1] = nn.Linear(complete_model.last_channel, num_classes)
+
+        # load the saved weights into complete_model
+        complete_model.load_state_dict(state_dict)
+        complete_model.eval()
 
         # Extract the second half of features and the classifier
         features = complete_model.features
@@ -173,10 +174,13 @@ class DistributedModel(nn.Module):
         remote_params.extend(self.p2_rref.remote().parameter_rrefs().to_here())
         return remote_params
 
-def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, num_classes, dataset):
+def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, num_classes, dataset, num_batches):
     """
     Main function to run distributed inference
     """
+
+    connected = True
+
     # Add hostname to log formatter
     hostname = socket.gethostname()
     old_factory = logging.getLogRecordFactory()
@@ -222,7 +226,7 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
             # Create a more explicit RPC backend options
             rpc_backend_options = rpc.TensorPipeRpcBackendOptions(
                 num_worker_threads=4,
-                rpc_timeout=300,
+                rpc_timeout=600,
                 _transports=["uv"],  # Force using UV transport only
                 init_method=f"tcp://0.0.0.0:{master_port}"  # Explicit init method
             )
@@ -285,11 +289,25 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
             # Run inference
             logger.info("Starting inference...")
             start_time = time.time()
+            
+            total_images = 0
+            
             with torch.no_grad():
-                logger.info("Sending data through the pipeline...")
-                output = model(images)
-                logger.info(f"Received output from pipeline with shape: {output.shape}")
+                for i, (images, labels) in enumerate(test_loader):
+                    if i == num_batches:
+                        break
+                    logger.info(f"Running inference on batch {i+1}/{num_batches} with shape: {images.shape}")
+                    output = model(images)
+                    logger.info(f"Received output shape: {output.shape}")
+
+                    # log the predicted vs actual labels
+                    _, predicted = torch.max(output.data, 1)
+                    logger.info(f"Predicted: {predicted[:5]} | Actual: {labels[:5]}")
+                    total_images += len(images)
+
             elapsed_time = time.time() - start_time
+            logger.info(f"Inference completed on {total_images} images.")
+
             
             logger.info(f"Inference completed in {elapsed_time:.4f} seconds")
             
@@ -317,7 +335,7 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
                 # Create a more explicit RPC backend options
                 rpc_backend_options = rpc.TensorPipeRpcBackendOptions(
                     num_worker_threads=4,
-                    rpc_timeout=120,
+                    rpc_timeout=600,
                     _transports=["uv"],  # Force using UV transport only
                     init_method=f"tcp://{master_addr}:{master_port}"  # Explicit init method
                 )
@@ -383,6 +401,8 @@ def main():
     parser.add_argument("--dataset", type=str, default="cifar10", 
                         choices=["cifar10", "dummy"],
                         help="Dataset to use for inference")
+    parser.add_argument("--num-batches", type=int, default=3, help="Number of batches to run during inference")
+
     
     args = parser.parse_args()
     
@@ -394,7 +414,8 @@ def main():
         batch_size=args.batch_size,
         num_micro_batches=args.micro_batches,
         num_classes=args.num_classes,
-        dataset=args.dataset
+        dataset=args.dataset,
+        num_batches=args.num_batches
     )
 
 if __name__ == "__main__":

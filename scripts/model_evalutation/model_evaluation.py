@@ -43,27 +43,22 @@ IMAGENET_PATH = os.path.join(DATA_ROOT, "imagenet")
 VOC_PATH = os.path.join(DATA_ROOT, "voc2012")
 COCO_PATH = os.path.join(DATA_ROOT, "coco")
 MODEL_PATH = os.path.join(DATA_ROOT, "pretrained_models")
+FINE_TUNED_MODEL_PATH = os.path.join(DATA_ROOT, "fine_tuned_models")
 
-# Configure PyTorch's model download directory
 os.environ['TORCH_HOME'] = MODEL_PATH
 
-# Results directory
 RESULTS_DIR = os.path.join(DATA_ROOT, "single_device_results")
-
-# Create results directory if it doesn't exist
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
-# Device settings
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 GPU_NAME = torch.cuda.get_device_name(0) if torch.cuda.is_available() else "None"
 
-# Evaluation settings
 DEFAULT_BATCH_SIZE = 16
 DEFAULT_NUM_WORKERS = 4
 DEFAULT_NUM_INFERENCES = 100
 DEFAULT_WARMUP_ITERATIONS = 10
 
-# Model names
+# Models
 AVAILABLE_MODELS = [
     "mobilenetv2", 
     "deeplabv3", 
@@ -208,8 +203,46 @@ class MetricsCollector:
 class ModelEvaluator:
     """Base class for model evaluation."""
     
+    def _create_base_model(self):
+        """Create and return the base model. To be implemented by subclasses."""
+        raise NotImplementedError("Subclass must implement _create_base_model()")
+    
+    def _create_model(self):
+        """Create and load the fine-tuned model if available."""
+        logger.info(f"Loading model for {self.model_name}...")
+        
+        # Create base model first
+        base_model = self._create_base_model()
+        
+        # FIRST adapt the model to the correct number of classes
+        adapted_model = self._adapt_model_to_dataset(base_model, self.num_classes)
+        
+        # THEN try to load fine-tuned weights
+        model_path = os.path.join(FINE_TUNED_MODEL_PATH, f"{self.model_name}_finetuned.pth")
+        if os.path.exists(model_path):
+            try:
+                checkpoint = torch.load(model_path, map_location=self.device)
+                adapted_model.load_state_dict(checkpoint['model_state_dict'])
+                logger.info(f"Loaded fine-tuned model with accuracy: {checkpoint.get('accuracy', 'unknown')}")
+            except Exception as e:
+                logger.warning(f"Error loading fine-tuned model: {e}")
+                logger.warning("Using adapted pretrained model.")
+        else:
+            logger.warning(f"Fine-tuned model not found at {model_path}. Using adapted pretrained model.")
+        
+        return adapted_model
+    
+    def _adapt_model_to_dataset(self, model, num_classes):
+        """Adapt the model's classifier to match the target dataset's number of classes."""
+        logger.info(f"Adapting model to {num_classes} classes")
+        return model
+    
+    def _create_data_loader(self):
+        """Create and return a data loader. To be implemented by subclasses."""
+        raise NotImplementedError("Subclass must implement _create_data_loader()")
+    
     def __init__(self, model_name, batch_size=DEFAULT_BATCH_SIZE, 
-                 num_workers=DEFAULT_NUM_WORKERS, num_inferences=DEFAULT_NUM_INFERENCES):
+                num_workers=DEFAULT_NUM_WORKERS, num_inferences=DEFAULT_NUM_INFERENCES):
         """
         Initialize the model evaluator.
         
@@ -226,24 +259,51 @@ class ModelEvaluator:
         self.device = DEVICE
         self.metrics = MetricsCollector()
         
-        # Create model and move to device
+        # Prepare data first (needed to know num_classes)
+        self.data_loader = self._create_data_loader()
+        
+        # Get the number of classes from the dataset
+        self.num_classes = self._get_num_classes()
+        
+        # Create model (this now includes adaptation and loading fine-tuned weights)
         self.model = self._create_model()
+        
+        # No need to adapt again - model is already adapted in _create_model
+        # Remove: self.model = self._adapt_model_to_dataset(base_model, self.num_classes)
+        
         self.model.eval()
         self.model.to(self.device)
         
         # Count parameters
         self.num_parameters = sum(p.numel() for p in self.model.parameters())
+    
+    def _get_num_classes(self):
+        """Get the number of classes in the dataset."""
+        # Try to get the number of classes from the dataset's class
+        dataset = self.data_loader.dataset
         
-        # Prepare data
-        self.data_loader = self._create_data_loader()
-    
-    def _create_model(self):
-        """Create and return the model. To be implemented by subclasses."""
-        raise NotImplementedError("Subclass must implement _create_model()")
-    
-    def _create_data_loader(self):
-        """Create and return a data loader. To be implemented by subclasses."""
-        raise NotImplementedError("Subclass must implement _create_data_loader()")
+        if hasattr(dataset, 'classes'):
+            return len(dataset.classes)
+        
+        # If that doesn't work, look at the targets
+        if hasattr(dataset, 'targets'):
+            if isinstance(dataset.targets, list) or isinstance(dataset.targets, np.ndarray):
+                return len(np.unique(dataset.targets))
+        
+        # Special case for SVHN
+        if hasattr(dataset, 'labels'):
+            return len(np.unique(dataset.labels))
+            
+        # If dataset is a transformed dataset or doesn't have classes attribute
+        # Try to infer from the first batch
+        try:
+            data_iter = iter(self.data_loader)
+            _, targets = next(data_iter)
+            return len(torch.unique(targets))
+        except:
+            # Default to 10 classes (typical for CIFAR-10, MNIST, etc.)
+            logger.warning("Could not determine number of classes, defaulting to 10")
+            return 10
         
     def _download_dataset_if_needed(self, dataset_class, **kwargs):
         """Helper method to download a dataset if it's not already available."""
@@ -372,20 +432,26 @@ class ModelEvaluator:
 class MobileNetV2Evaluator(ModelEvaluator):
     """Evaluator for MobileNetV2."""
     
-    def _create_model(self):
+    def _create_base_model(self):
         logger.info("Loading pretrained MobileNetV2 model...")
         return tv_models.mobilenet_v2(weights=tv_models.MobileNet_V2_Weights.IMAGENET1K_V1)
     
+    def _adapt_model_to_dataset(self, model, num_classes):
+        logger.info(f"Adapting MobileNetV2 to {num_classes} classes")
+        # Replace the classifier
+        in_features = model.classifier[1].in_features
+        model.classifier[1] = nn.Linear(in_features, num_classes)
+        return model
+    
     def _create_data_loader(self):
         transform = transforms.Compose([
-            transforms.Resize(256),
+            transforms.Resize(224),
             transforms.CenterCrop(224),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ])
         
-        # MobileNetV2 is trained on ImageNet but we'll use CIFAR-10 for evaluation
-        # since it's easier to download and still suitable for classification
+        # Try CIFAR-10 for MobileNetV2 (good balance of size and complexity)
         logger.info("Loading CIFAR-10 dataset for MobileNetV2 evaluation...")
         dataset = datasets.CIFAR10(root=DATA_ROOT, train=False, download=True, transform=transform)
         
@@ -396,22 +462,28 @@ class MobileNetV2Evaluator(ModelEvaluator):
 class DeepLabV3Evaluator(ModelEvaluator):
     """Evaluator for DeepLabV3."""
     
-    def _create_model(self):
+    def _create_base_model(self):
         logger.info("Loading pretrained DeepLabV3 model...")
         # DeepLabV3 with ResNet-50 backbone
         return tv_models.segmentation.deeplabv3_resnet50(weights=tv_models.segmentation.DeepLabV3_ResNet50_Weights.COCO_WITH_VOC_LABELS_V1)
     
+    def _adapt_model_to_dataset(self, model, num_classes):
+        logger.info(f"Adapting DeepLabV3 to {num_classes} classes")
+        # Replace the classifier in the decoder
+        model.classifier[4] = nn.Conv2d(256, num_classes, kernel_size=(1, 1), stride=(1, 1))
+        return model
+    
     def _create_data_loader(self):
+        # Use smaller size for Raspberry Pi
         transform = transforms.Compose([
-            transforms.Resize((520, 520)),
+            transforms.Resize((256, 256)), 
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ])
         
-        # For segmentation, we'll use VOC if available (through torchvision.datasets.VOCSegmentation)
-        # otherwise, we'll adapt CIFAR-10 for this test
+        # Try Pascal VOC segmentation dataset
         try:
-            logger.info("Attempting to load VOCSegmentation dataset...")
+            logger.info("Loading VOCSegmentation dataset...")
             dataset = datasets.VOCSegmentation(root=DATA_ROOT, year='2012', 
                                              image_set='val', download=True,
                                              transform=transform)
@@ -420,12 +492,12 @@ class DeepLabV3Evaluator(ModelEvaluator):
             logger.warning("Using CIFAR-10 instead (not ideal for segmentation)")
             dataset = datasets.CIFAR10(root=DATA_ROOT, train=False, download=True, transform=transform)
         
-        return DataLoader(dataset, batch_size=self.batch_size, shuffle=True, 
+        # Use smaller batch size for this model
+        return DataLoader(dataset, batch_size=max(1, self.batch_size//4), shuffle=True, 
                           num_workers=self.num_workers, pin_memory=True)
     
     def _calculate_accuracy(self, outputs, targets):
-        """For segmentation models, use mIoU or another appropriate metric."""
-        # This is a simplification; real segmentation evaluation would be more complex
+        """For segmentation models, use pixel accuracy."""
         if isinstance(outputs, dict):
             outputs = outputs['out']
         
@@ -458,9 +530,22 @@ class DeepLabV3Evaluator(ModelEvaluator):
 class InceptionEvaluator(ModelEvaluator):
     """Evaluator for Inception v3."""
     
-    def _create_model(self):
+    def _create_base_model(self):
         logger.info("Loading pretrained Inception v3 model...")
         return tv_models.inception_v3(weights=tv_models.Inception_V3_Weights.IMAGENET1K_V1)
+    
+    def _adapt_model_to_dataset(self, model, num_classes):
+        logger.info(f"Adapting Inception v3 to {num_classes} classes")
+        # Replace the primary classifier
+        in_features = model.fc.in_features
+        model.fc = nn.Linear(in_features, num_classes)
+        
+        # Replace the auxiliary classifier if present
+        if hasattr(model, 'AuxLogits') and model.AuxLogits is not None:
+            aux_in_features = model.AuxLogits.fc.in_features
+            model.AuxLogits.fc = nn.Linear(aux_in_features, num_classes)
+        
+        return model
     
     def _create_data_loader(self):
         # Inception v3 requires 299x299 input
@@ -471,9 +556,14 @@ class InceptionEvaluator(ModelEvaluator):
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ])
         
-        # Use CIFAR-10 for evaluation, with appropriate resizing
-        logger.info("Loading CIFAR-10 dataset for Inception v3 evaluation...")
-        dataset = datasets.CIFAR10(root=DATA_ROOT, train=False, download=True, transform=transform)
+        # Try STL10 first (better images), fall back to CIFAR-10
+        try:
+            logger.info("Loading STL10 dataset for Inception...")
+            dataset = datasets.STL10(root=DATA_ROOT, split='test', download=True, transform=transform)
+        except Exception as e:
+            logger.warning(f"Error loading STL10: {e}")
+            logger.warning("Falling back to CIFAR-10")
+            dataset = datasets.CIFAR10(root=DATA_ROOT, train=False, download=True, transform=transform)
         
         return DataLoader(dataset, batch_size=self.batch_size, shuffle=True, 
                           num_workers=self.num_workers, pin_memory=True)
@@ -491,22 +581,28 @@ class InceptionEvaluator(ModelEvaluator):
 class ResNet18Evaluator(ModelEvaluator):
     """Evaluator for ResNet18."""
     
-    def _create_model(self):
+    def _create_base_model(self):
         logger.info("Loading pretrained ResNet18 model...")
         return tv_models.resnet18(weights=tv_models.ResNet18_Weights.IMAGENET1K_V1)
     
+    def _adapt_model_to_dataset(self, model, num_classes):
+        logger.info(f"Adapting ResNet18 to {num_classes} classes")
+        # Replace the fc layer
+        in_features = model.fc.in_features
+        model.fc = nn.Linear(in_features, num_classes)
+        return model
+    
     def _create_data_loader(self):
         transform = transforms.Compose([
-            transforms.Resize(256),
+            transforms.Resize(224),
             transforms.CenterCrop(224),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ])
         
-        # Since we want to use built-in datasets, let's use CIFAR-100 for ResNet
-        # CIFAR-100 has 100 classes which makes it a bit more suitable for evaluating ImageNet models
-        logger.info("Loading CIFAR-100 dataset for ResNet18 evaluation...")
-        dataset = datasets.CIFAR100(root=DATA_ROOT, train=False, download=True, transform=transform)
+        # Use CIFAR-10 instead of CIFAR-100 for better accuracy
+        logger.info("Loading CIFAR-10 dataset for ResNet18 evaluation...")
+        dataset = datasets.CIFAR10(root=DATA_ROOT, train=False, download=True, transform=transform)
         
         return DataLoader(dataset, batch_size=self.batch_size, shuffle=True, 
                           num_workers=self.num_workers, pin_memory=True)
@@ -515,49 +611,58 @@ class ResNet18Evaluator(ModelEvaluator):
 class AlexNetEvaluator(ModelEvaluator):
     """Evaluator for AlexNet."""
     
-    def _create_model(self):
+    def _create_base_model(self):
         logger.info("Loading pretrained AlexNet model...")
         return tv_models.alexnet(weights=tv_models.AlexNet_Weights.IMAGENET1K_V1)
     
+    def _adapt_model_to_dataset(self, model, num_classes):
+        logger.info(f"Adapting AlexNet to {num_classes} classes")
+        # Replace the classifier
+        in_features = model.classifier[6].in_features
+        model.classifier[6] = nn.Linear(in_features, num_classes)
+        return model
+    
     def _create_data_loader(self):
-        transform = transforms.Compose([
-            transforms.Resize(256),
-            transforms.CenterCrop(224),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-        ])
-        
-        # Use CIFAR-10 for AlexNet as it's a standard classification dataset
-        logger.info("Loading CIFAR-10 dataset for AlexNet evaluation...")
-        dataset = datasets.CIFAR10(root=DATA_ROOT, train=False, download=True, transform=transform)
-        
-        return DataLoader(dataset, batch_size=self.batch_size, shuffle=True, 
-                          num_workers=self.num_workers, pin_memory=True)
+            transform = transforms.Compose([
+                transforms.Resize(224),
+                transforms.CenterCrop(224),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+            ])
+            
+            # Use CIFAR-10 directly to match fine-tuned model
+            logger.info("Loading CIFAR-10 dataset for AlexNet evaluation...")
+            dataset = datasets.CIFAR10(root=DATA_ROOT, train=False, download=True, transform=transform)
+            
+            return DataLoader(dataset, batch_size=self.batch_size, shuffle=True, 
+                            num_workers=self.num_workers, pin_memory=True)
 
 
 class VGG16Evaluator(ModelEvaluator):
     """Evaluator for VGG16."""
     
-    def _create_model(self):
+    def _create_base_model(self):
         logger.info("Loading pretrained VGG16 model...")
         return tv_models.vgg16(weights=tv_models.VGG16_Weights.IMAGENET1K_V1)
     
+    def _adapt_model_to_dataset(self, model, num_classes):
+        logger.info(f"Adapting VGG16 to {num_classes} classes")
+        # Replace the classifier
+        in_features = model.classifier[6].in_features
+        model.classifier[6] = nn.Linear(in_features, num_classes)
+        return model
+    
     def _create_data_loader(self):
         transform = transforms.Compose([
-            transforms.Resize(256),
+            transforms.Resize(224),
             transforms.CenterCrop(224),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ])
         
-        # Use STL10 dataset for VGG16, which has higher resolution images than CIFAR
-        try:
-            logger.info("Loading STL10 dataset for VGG16 evaluation...")
-            dataset = datasets.STL10(root=DATA_ROOT, split='test', download=True, transform=transform)
-        except Exception as e:
-            logger.warning(f"Error loading STL10: {e}")
-            logger.warning("Falling back to CIFAR-10")
-            dataset = datasets.CIFAR10(root=DATA_ROOT, train=False, download=True, transform=transform)
+        # Use CIFAR-10 directly to match fine-tuned model
+        logger.info("Loading CIFAR-10 dataset for VGG16 evaluation...")
+        dataset = datasets.CIFAR10(root=DATA_ROOT, train=False, download=True, transform=transform)
         
         return DataLoader(dataset, batch_size=self.batch_size, shuffle=True, 
                           num_workers=self.num_workers, pin_memory=True)
@@ -566,35 +671,46 @@ class VGG16Evaluator(ModelEvaluator):
 class SqueezeNetEvaluator(ModelEvaluator):
     """Evaluator for SqueezeNet."""
     
-    def _create_model(self):
+    def _create_base_model(self):
         logger.info("Loading pretrained SqueezeNet model...")
         return tv_models.squeezenet1_1(weights=tv_models.SqueezeNet1_1_Weights.IMAGENET1K_V1)
     
+    def _adapt_model_to_dataset(self, model, num_classes):
+        logger.info(f"Adapting SqueezeNet to {num_classes} classes")
+        # For SqueezeNet, we need to replace the final conv layer
+        model.classifier[1] = nn.Conv2d(512, num_classes, kernel_size=(1, 1), stride=(1, 1))
+        return model
+    
     def _create_data_loader(self):
         transform = transforms.Compose([
-            transforms.Resize(256),
+            transforms.Resize(224),
             transforms.CenterCrop(224),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ])
         
-        # Use Fashion-MNIST for SqueezeNet to provide variety in our dataset choices
-        # SqueezeNet is designed to be resource-efficient, so it's interesting to test it on a simpler dataset
+        # Try SVHN first (good for SqueezeNet)
         try:
-            logger.info("Loading FashionMNIST dataset for SqueezeNet evaluation...")
-            # For FashionMNIST, we need to convert grayscale to RGB
-            fashion_transform = transforms.Compose([
-                transforms.Resize(256),
-                transforms.CenterCrop(224),
-                transforms.ToTensor(),
-                transforms.Lambda(lambda x: x.repeat(3, 1, 1)),  # Convert grayscale to RGB
-                transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-            ])
-            dataset = datasets.FashionMNIST(root=DATA_ROOT, train=False, download=True, transform=fashion_transform)
+            logger.info("Loading SVHN dataset for SqueezeNet...")
+            dataset = datasets.SVHN(root=DATA_ROOT, split='test', download=True, 
+                                   transform=transform)
         except Exception as e:
-            logger.warning(f"Error loading FashionMNIST: {e}")
-            logger.warning("Falling back to CIFAR-10")
-            dataset = datasets.CIFAR10(root=DATA_ROOT, train=False, download=True, transform=transform)
+            logger.warning(f"Error loading SVHN: {e}")
+            # FashionMNIST is also good for SqueezeNet (simple features)
+            try:
+                logger.info("Trying FashionMNIST...")
+                fashion_transform = transforms.Compose([
+                    transforms.Resize(224),
+                    transforms.CenterCrop(224),
+                    transforms.ToTensor(),
+                    transforms.Lambda(lambda x: x.repeat(3, 1, 1)),  # Convert grayscale to RGB
+                    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+                ])
+                dataset = datasets.FashionMNIST(root=DATA_ROOT, train=False, download=True, transform=fashion_transform)
+            except Exception as e:
+                logger.warning(f"Error loading FashionMNIST: {e}")
+                logger.warning("Falling back to CIFAR-10")
+                dataset = datasets.CIFAR10(root=DATA_ROOT, train=False, download=True, transform=transform)
         
         return DataLoader(dataset, batch_size=self.batch_size, shuffle=True, 
                           num_workers=self.num_workers, pin_memory=True)
@@ -646,7 +762,7 @@ def parse_args():
                         help=f"Directory to save results (default: {RESULTS_DIR})")
     
     parser.add_argument("--output-format", type=str, default="csv", choices=["json", "csv"],
-                        help="Format of output files (default: json)")
+                        help="Format of output files (default: csv)")
     
     parser.add_argument("--aggregate", action="store_true", 
                         help="Aggregate results from all models into a single file")
@@ -675,7 +791,7 @@ def main():
             # Get the evaluator class for this model
             EvaluatorClass = get_evaluator_class(model_name)
             
-            # Create evaluator instance
+            # Create evaluator
             evaluator = EvaluatorClass(
                 model_name=model_name,
                 batch_size=args.batch_size,
@@ -683,13 +799,13 @@ def main():
                 num_inferences=args.num_inferences
             )
             
-            # Run evaluation
+            # Run eval
             results = evaluator.run_evaluation(warmup_iterations=args.warmup_iterations)
             
             # Save individual results
             evaluator.save_results(output_dir=args.output_dir, format=args.output_format)
             
-            # Store for aggregation if needed
+            # Store for aggregation
             all_results[model_name] = results
             
         except Exception as e:
@@ -697,7 +813,7 @@ def main():
             import traceback
             logger.error(traceback.format_exc())
     
-    # Aggregate results if requested
+    # Aggregate results
     if args.aggregate and all_results:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         
@@ -716,11 +832,9 @@ def main():
             with open(filename, 'w', newline='') as f:
                 writer = csv.writer(f)
                 
-                # Write header row with 'model_name' as the first column
                 header = ['model_name'] + sorted(k for k in all_keys if k != 'model_name')
                 writer.writerow(header)
                 
-                # Write a row for each model
                 for model_name, result in all_results.items():
                     row = [model_name] + [result.get(k, '') for k in header[1:]]
                     writer.writerow(row)
