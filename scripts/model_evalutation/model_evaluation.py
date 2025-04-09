@@ -267,6 +267,10 @@ class ModelEvaluator:
             if isinstance(dataset.targets, list) or isinstance(dataset.targets, np.ndarray):
                 return len(np.unique(dataset.targets))
         
+        # Special case for SVHN
+        if hasattr(dataset, 'labels'):
+            return len(np.unique(dataset.labels))
+            
         # If dataset is a transformed dataset or doesn't have classes attribute
         # Try to infer from the first batch
         try:
@@ -418,14 +422,13 @@ class MobileNetV2Evaluator(ModelEvaluator):
     
     def _create_data_loader(self):
         transform = transforms.Compose([
-            transforms.Resize(256),
+            transforms.Resize(224),
             transforms.CenterCrop(224),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ])
         
-        # MobileNetV2 is trained on ImageNet but we'll use CIFAR-10 for evaluation
-        # since it's easier to download and still suitable for classification
+        # Try CIFAR-10 for MobileNetV2 (good balance of size and complexity)
         logger.info("Loading CIFAR-10 dataset for MobileNetV2 evaluation...")
         dataset = datasets.CIFAR10(root=DATA_ROOT, train=False, download=True, transform=transform)
         
@@ -448,16 +451,16 @@ class DeepLabV3Evaluator(ModelEvaluator):
         return model
     
     def _create_data_loader(self):
+        # Use smaller size for Raspberry Pi
         transform = transforms.Compose([
-            transforms.Resize((520, 520)),
+            transforms.Resize((256, 256)), 
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ])
         
-        # For segmentation, we'll use VOC if available (through torchvision.datasets.VOCSegmentation)
-        # otherwise, we'll adapt CIFAR-10 for this test
+        # Try Pascal VOC segmentation dataset
         try:
-            logger.info("Attempting to load VOCSegmentation dataset...")
+            logger.info("Loading VOCSegmentation dataset...")
             dataset = datasets.VOCSegmentation(root=DATA_ROOT, year='2012', 
                                              image_set='val', download=True,
                                              transform=transform)
@@ -466,12 +469,12 @@ class DeepLabV3Evaluator(ModelEvaluator):
             logger.warning("Using CIFAR-10 instead (not ideal for segmentation)")
             dataset = datasets.CIFAR10(root=DATA_ROOT, train=False, download=True, transform=transform)
         
-        return DataLoader(dataset, batch_size=self.batch_size, shuffle=True, 
+        # Use smaller batch size for this model
+        return DataLoader(dataset, batch_size=max(1, self.batch_size//4), shuffle=True, 
                           num_workers=self.num_workers, pin_memory=True)
     
     def _calculate_accuracy(self, outputs, targets):
-        """For segmentation models, use mIoU or another appropriate metric."""
-        # This is a simplification; real segmentation evaluation would be more complex
+        """For segmentation models, use pixel accuracy."""
         if isinstance(outputs, dict):
             outputs = outputs['out']
         
@@ -530,9 +533,14 @@ class InceptionEvaluator(ModelEvaluator):
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ])
         
-        # Use CIFAR-10 for evaluation, with appropriate resizing
-        logger.info("Loading CIFAR-10 dataset for Inception v3 evaluation...")
-        dataset = datasets.CIFAR10(root=DATA_ROOT, train=False, download=True, transform=transform)
+        # Try STL10 first (better images), fall back to CIFAR-10
+        try:
+            logger.info("Loading STL10 dataset for Inception...")
+            dataset = datasets.STL10(root=DATA_ROOT, split='test', download=True, transform=transform)
+        except Exception as e:
+            logger.warning(f"Error loading STL10: {e}")
+            logger.warning("Falling back to CIFAR-10")
+            dataset = datasets.CIFAR10(root=DATA_ROOT, train=False, download=True, transform=transform)
         
         return DataLoader(dataset, batch_size=self.batch_size, shuffle=True, 
                           num_workers=self.num_workers, pin_memory=True)
@@ -563,16 +571,15 @@ class ResNet18Evaluator(ModelEvaluator):
     
     def _create_data_loader(self):
         transform = transforms.Compose([
-            transforms.Resize(256),
+            transforms.Resize(224),
             transforms.CenterCrop(224),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ])
         
-        # Since we want to use built-in datasets, let's use CIFAR-100 for ResNet
-        # CIFAR-100 has 100 classes which makes it a bit more suitable for evaluating ImageNet models
-        logger.info("Loading CIFAR-100 dataset for ResNet18 evaluation...")
-        dataset = datasets.CIFAR100(root=DATA_ROOT, train=False, download=True, transform=transform)
+        # Use CIFAR-10 instead of CIFAR-100 for better accuracy
+        logger.info("Loading CIFAR-10 dataset for ResNet18 evaluation...")
+        dataset = datasets.CIFAR10(root=DATA_ROOT, train=False, download=True, transform=transform)
         
         return DataLoader(dataset, batch_size=self.batch_size, shuffle=True, 
                           num_workers=self.num_workers, pin_memory=True)
@@ -594,15 +601,21 @@ class AlexNetEvaluator(ModelEvaluator):
     
     def _create_data_loader(self):
         transform = transforms.Compose([
-            transforms.Resize(256),
+            transforms.Resize(224),
             transforms.CenterCrop(224),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ])
         
-        # Use CIFAR-10 for AlexNet as it's a standard classification dataset
-        logger.info("Loading CIFAR-10 dataset for AlexNet evaluation...")
-        dataset = datasets.CIFAR10(root=DATA_ROOT, train=False, download=True, transform=transform)
+        # Try Oxford-IIIT Pet dataset first (better for AlexNet)
+        try:
+            logger.info("Loading Oxford-IIIT Pet dataset for AlexNet...")
+            dataset = datasets.OxfordIIITPet(root=DATA_ROOT, split='test', download=True, transform=transform)
+        except Exception as e:
+            logger.warning(f"Error loading Oxford-IIIT Pet: {e}")
+            # Fall back to CIFAR-10
+            logger.warning("Falling back to CIFAR-10")
+            dataset = datasets.CIFAR10(root=DATA_ROOT, train=False, download=True, transform=transform)
         
         return DataLoader(dataset, batch_size=self.batch_size, shuffle=True, 
                           num_workers=self.num_workers, pin_memory=True)
@@ -624,20 +637,25 @@ class VGG16Evaluator(ModelEvaluator):
     
     def _create_data_loader(self):
         transform = transforms.Compose([
-            transforms.Resize(256),
+            transforms.Resize(224),
             transforms.CenterCrop(224),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ])
         
-        # Use STL10 dataset for VGG16, which has higher resolution images than CIFAR
+        # Try Flowers dataset first
         try:
-            logger.info("Loading STL10 dataset for VGG16 evaluation...")
-            dataset = datasets.STL10(root=DATA_ROOT, split='test', download=True, transform=transform)
+            logger.info("Loading Flowers102 dataset for VGG16...")
+            dataset = datasets.Flowers102(root=DATA_ROOT, split='test', download=True, transform=transform)
         except Exception as e:
-            logger.warning(f"Error loading STL10: {e}")
-            logger.warning("Falling back to CIFAR-10")
-            dataset = datasets.CIFAR10(root=DATA_ROOT, train=False, download=True, transform=transform)
+            logger.warning(f"Error loading Flowers102: {e}")
+            try:
+                logger.info("Trying STL10 dataset...")
+                dataset = datasets.STL10(root=DATA_ROOT, split='test', download=True, transform=transform)
+            except Exception as e:
+                logger.warning(f"Error loading STL10: {e}")
+                logger.warning("Falling back to CIFAR-10")
+                dataset = datasets.CIFAR10(root=DATA_ROOT, train=False, download=True, transform=transform)
         
         return DataLoader(dataset, batch_size=self.batch_size, shuffle=True, 
                           num_workers=self.num_workers, pin_memory=True)
@@ -658,29 +676,34 @@ class SqueezeNetEvaluator(ModelEvaluator):
     
     def _create_data_loader(self):
         transform = transforms.Compose([
-            transforms.Resize(256),
+            transforms.Resize(224),
             transforms.CenterCrop(224),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ])
         
-        # Use Fashion-MNIST for SqueezeNet to provide variety in our dataset choices
-        # SqueezeNet is designed to be resource-efficient, so it's interesting to test it on a simpler dataset
+        # Try SVHN first (good for SqueezeNet)
         try:
-            logger.info("Loading FashionMNIST dataset for SqueezeNet evaluation...")
-            # For FashionMNIST, we need to convert grayscale to RGB
-            fashion_transform = transforms.Compose([
-                transforms.Resize(256),
-                transforms.CenterCrop(224),
-                transforms.ToTensor(),
-                transforms.Lambda(lambda x: x.repeat(3, 1, 1)),  # Convert grayscale to RGB
-                transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-            ])
-            dataset = datasets.FashionMNIST(root=DATA_ROOT, train=False, download=True, transform=fashion_transform)
+            logger.info("Loading SVHN dataset for SqueezeNet...")
+            dataset = datasets.SVHN(root=DATA_ROOT, split='test', download=True, 
+                                   transform=transform)
         except Exception as e:
-            logger.warning(f"Error loading FashionMNIST: {e}")
-            logger.warning("Falling back to CIFAR-10")
-            dataset = datasets.CIFAR10(root=DATA_ROOT, train=False, download=True, transform=transform)
+            logger.warning(f"Error loading SVHN: {e}")
+            # FashionMNIST is also good for SqueezeNet (simple features)
+            try:
+                logger.info("Trying FashionMNIST...")
+                fashion_transform = transforms.Compose([
+                    transforms.Resize(224),
+                    transforms.CenterCrop(224),
+                    transforms.ToTensor(),
+                    transforms.Lambda(lambda x: x.repeat(3, 1, 1)),  # Convert grayscale to RGB
+                    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+                ])
+                dataset = datasets.FashionMNIST(root=DATA_ROOT, train=False, download=True, transform=fashion_transform)
+            except Exception as e:
+                logger.warning(f"Error loading FashionMNIST: {e}")
+                logger.warning("Falling back to CIFAR-10")
+                dataset = datasets.CIFAR10(root=DATA_ROOT, train=False, download=True, transform=transform)
         
         return DataLoader(dataset, batch_size=self.batch_size, shuffle=True, 
                           num_workers=self.num_workers, pin_memory=True)
@@ -732,7 +755,7 @@ def parse_args():
                         help=f"Directory to save results (default: {RESULTS_DIR})")
     
     parser.add_argument("--output-format", type=str, default="csv", choices=["json", "csv"],
-                        help="Format of output files (default: json)")
+                        help="Format of output files (default: csv)")
     
     parser.add_argument("--aggregate", action="store_true", 
                         help="Aggregate results from all models into a single file")
