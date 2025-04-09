@@ -180,7 +180,7 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
     """
 
     connected = True
-    
+
     # Add hostname to log formatter
     hostname = socket.gethostname()
     old_factory = logging.getLogRecordFactory()
@@ -290,7 +290,7 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
             logger.info("Starting inference...")
             start_time = time.time()
             
-            num_batches = 2 # hard-coded temporarily 
+            num_batches = 3 # hard-coded temporarily 
             total_images = 0
             
             with torch.no_grad():
