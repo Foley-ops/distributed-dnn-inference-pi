@@ -193,12 +193,17 @@ class ModelFinetuner:
         return epoch_loss, epoch_acc
     
     def train(self):
-        """Train the model for the specified number of epochs."""
+        """Train the model for the specified number of epochs with early stopping."""
         logger.info(f"Starting fine-tuning of {self.model_name} for {self.num_epochs} epochs")
         logger.info(f"Training on device: {self.device}")
         
         best_acc = 0.0
         best_model_state = None
+        best_epoch = 0
+        
+        # Early stopping parameters
+        patience = 3  # Stop if no improvement for 3 epochs
+        patience_counter = 0
         
         for epoch in range(self.num_epochs):
             # Train one epoch
@@ -208,19 +213,28 @@ class ModelFinetuner:
             val_loss, val_acc = self.validate()
             
             logger.info(f"Epoch {epoch+1}/{self.num_epochs}, "
-                       f"Train Loss: {train_loss:.4f}, "
-                       f"Val Loss: {val_loss:.4f}, "
-                       f"Val Acc: {val_acc:.4f}")
+                    f"Train Loss: {train_loss:.4f}, "
+                    f"Val Loss: {val_loss:.4f}, "
+                    f"Val Acc: {val_acc:.4f}")
             
-            # Save best model
+            # Check if model improved
             if val_acc > best_acc:
                 best_acc = val_acc
                 best_model_state = self.model.state_dict().copy()
+                best_epoch = epoch
+                patience_counter = 0  # Reset patience counter
+            else:
+                patience_counter += 1  # Increment patience counter
+                
+            # Early stopping check
+            if patience_counter >= patience:
+                logger.info(f"Early stopping triggered. No improvement for {patience} epochs.")
+                break
         
         # Restore best model
         if best_model_state is not None:
             self.model.load_state_dict(best_model_state)
-            logger.info(f"Restored best model with validation accuracy: {best_acc:.4f}")
+            logger.info(f"Restored best model from epoch {best_epoch+1} with validation accuracy: {best_acc:.4f}")
         
         return best_acc
     
