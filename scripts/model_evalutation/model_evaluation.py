@@ -208,6 +208,19 @@ class MetricsCollector:
 class ModelEvaluator:
     """Base class for model evaluation."""
     
+    def _create_model(self):
+        """Create and return the model. To be implemented by subclasses."""
+        raise NotImplementedError("Subclass must implement _create_model()")
+    
+    def _adapt_model_to_dataset(self, model, num_classes):
+        """Adapt the model's classifier to match the target dataset's number of classes."""
+        logger.info(f"Adapting model to {num_classes} classes")
+        return model
+    
+    def _create_data_loader(self):
+        """Create and return a data loader. To be implemented by subclasses."""
+        raise NotImplementedError("Subclass must implement _create_data_loader()")
+    
     def __init__(self, model_name, batch_size=DEFAULT_BATCH_SIZE, 
                  num_workers=DEFAULT_NUM_WORKERS, num_inferences=DEFAULT_NUM_INFERENCES):
         """
@@ -226,24 +239,44 @@ class ModelEvaluator:
         self.device = DEVICE
         self.metrics = MetricsCollector()
         
-        # Create model and move to device
-        self.model = self._create_model()
+        # Prepare data first (needed to know num_classes)
+        self.data_loader = self._create_data_loader()
+        
+        # Get the number of classes from the dataset
+        self.num_classes = self._get_num_classes()
+        
+        # Create model, adapt it to the dataset, and move to device
+        base_model = self._create_model()
+        self.model = self._adapt_model_to_dataset(base_model, self.num_classes)
         self.model.eval()
         self.model.to(self.device)
         
         # Count parameters
         self.num_parameters = sum(p.numel() for p in self.model.parameters())
+    
+    def _get_num_classes(self):
+        """Get the number of classes in the dataset."""
+        # Try to get the number of classes from the dataset's class
+        dataset = self.data_loader.dataset
         
-        # Prepare data
-        self.data_loader = self._create_data_loader()
-    
-    def _create_model(self):
-        """Create and return the model. To be implemented by subclasses."""
-        raise NotImplementedError("Subclass must implement _create_model()")
-    
-    def _create_data_loader(self):
-        """Create and return a data loader. To be implemented by subclasses."""
-        raise NotImplementedError("Subclass must implement _create_data_loader()")
+        if hasattr(dataset, 'classes'):
+            return len(dataset.classes)
+        
+        # If that doesn't work, look at the targets
+        if hasattr(dataset, 'targets'):
+            if isinstance(dataset.targets, list) or isinstance(dataset.targets, np.ndarray):
+                return len(np.unique(dataset.targets))
+        
+        # If dataset is a transformed dataset or doesn't have classes attribute
+        # Try to infer from the first batch
+        try:
+            data_iter = iter(self.data_loader)
+            _, targets = next(data_iter)
+            return len(torch.unique(targets))
+        except:
+            # Default to 10 classes (typical for CIFAR-10, MNIST, etc.)
+            logger.warning("Could not determine number of classes, defaulting to 10")
+            return 10
         
     def _download_dataset_if_needed(self, dataset_class, **kwargs):
         """Helper method to download a dataset if it's not already available."""
@@ -376,6 +409,13 @@ class MobileNetV2Evaluator(ModelEvaluator):
         logger.info("Loading pretrained MobileNetV2 model...")
         return tv_models.mobilenet_v2(weights=tv_models.MobileNet_V2_Weights.IMAGENET1K_V1)
     
+    def _adapt_model_to_dataset(self, model, num_classes):
+        logger.info(f"Adapting MobileNetV2 to {num_classes} classes")
+        # Replace the classifier
+        in_features = model.classifier[1].in_features
+        model.classifier[1] = nn.Linear(in_features, num_classes)
+        return model
+    
     def _create_data_loader(self):
         transform = transforms.Compose([
             transforms.Resize(256),
@@ -400,6 +440,12 @@ class DeepLabV3Evaluator(ModelEvaluator):
         logger.info("Loading pretrained DeepLabV3 model...")
         # DeepLabV3 with ResNet-50 backbone
         return tv_models.segmentation.deeplabv3_resnet50(weights=tv_models.segmentation.DeepLabV3_ResNet50_Weights.COCO_WITH_VOC_LABELS_V1)
+    
+    def _adapt_model_to_dataset(self, model, num_classes):
+        logger.info(f"Adapting DeepLabV3 to {num_classes} classes")
+        # Replace the classifier in the decoder
+        model.classifier[4] = nn.Conv2d(256, num_classes, kernel_size=(1, 1), stride=(1, 1))
+        return model
     
     def _create_data_loader(self):
         transform = transforms.Compose([
@@ -462,6 +508,19 @@ class InceptionEvaluator(ModelEvaluator):
         logger.info("Loading pretrained Inception v3 model...")
         return tv_models.inception_v3(weights=tv_models.Inception_V3_Weights.IMAGENET1K_V1)
     
+    def _adapt_model_to_dataset(self, model, num_classes):
+        logger.info(f"Adapting Inception v3 to {num_classes} classes")
+        # Replace the primary classifier
+        in_features = model.fc.in_features
+        model.fc = nn.Linear(in_features, num_classes)
+        
+        # Replace the auxiliary classifier if present
+        if hasattr(model, 'AuxLogits') and model.AuxLogits is not None:
+            aux_in_features = model.AuxLogits.fc.in_features
+            model.AuxLogits.fc = nn.Linear(aux_in_features, num_classes)
+        
+        return model
+    
     def _create_data_loader(self):
         # Inception v3 requires 299x299 input
         transform = transforms.Compose([
@@ -495,6 +554,13 @@ class ResNet18Evaluator(ModelEvaluator):
         logger.info("Loading pretrained ResNet18 model...")
         return tv_models.resnet18(weights=tv_models.ResNet18_Weights.IMAGENET1K_V1)
     
+    def _adapt_model_to_dataset(self, model, num_classes):
+        logger.info(f"Adapting ResNet18 to {num_classes} classes")
+        # Replace the fc layer
+        in_features = model.fc.in_features
+        model.fc = nn.Linear(in_features, num_classes)
+        return model
+    
     def _create_data_loader(self):
         transform = transforms.Compose([
             transforms.Resize(256),
@@ -519,6 +585,13 @@ class AlexNetEvaluator(ModelEvaluator):
         logger.info("Loading pretrained AlexNet model...")
         return tv_models.alexnet(weights=tv_models.AlexNet_Weights.IMAGENET1K_V1)
     
+    def _adapt_model_to_dataset(self, model, num_classes):
+        logger.info(f"Adapting AlexNet to {num_classes} classes")
+        # Replace the classifier
+        in_features = model.classifier[6].in_features
+        model.classifier[6] = nn.Linear(in_features, num_classes)
+        return model
+    
     def _create_data_loader(self):
         transform = transforms.Compose([
             transforms.Resize(256),
@@ -541,6 +614,13 @@ class VGG16Evaluator(ModelEvaluator):
     def _create_model(self):
         logger.info("Loading pretrained VGG16 model...")
         return tv_models.vgg16(weights=tv_models.VGG16_Weights.IMAGENET1K_V1)
+    
+    def _adapt_model_to_dataset(self, model, num_classes):
+        logger.info(f"Adapting VGG16 to {num_classes} classes")
+        # Replace the classifier
+        in_features = model.classifier[6].in_features
+        model.classifier[6] = nn.Linear(in_features, num_classes)
+        return model
     
     def _create_data_loader(self):
         transform = transforms.Compose([
@@ -569,6 +649,12 @@ class SqueezeNetEvaluator(ModelEvaluator):
     def _create_model(self):
         logger.info("Loading pretrained SqueezeNet model...")
         return tv_models.squeezenet1_1(weights=tv_models.SqueezeNet1_1_Weights.IMAGENET1K_V1)
+    
+    def _adapt_model_to_dataset(self, model, num_classes):
+        logger.info(f"Adapting SqueezeNet to {num_classes} classes")
+        # For SqueezeNet, we need to replace the final conv layer
+        model.classifier[1] = nn.Conv2d(512, num_classes, kernel_size=(1, 1), stride=(1, 1))
+        return model
     
     def _create_data_loader(self):
         transform = transforms.Compose([
