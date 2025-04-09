@@ -178,6 +178,9 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
     """
     Main function to run distributed inference
     """
+
+    connected = True
+    
     # Add hostname to log formatter
     hostname = socket.gethostname()
     old_factory = logging.getLogRecordFactory()
