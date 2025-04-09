@@ -460,21 +460,10 @@ class AlexNetFinetuner(ModelFinetuner):
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ])
         
-        # Try Oxford-IIIT Pet dataset first
-        try:
-            logger.info("Loading Oxford-IIIT Pet dataset for AlexNet...")
-            dataset = datasets.OxfordIIITPet(root=DATA_ROOT, download=True, transform=transform_train)
-            
-            # Split into train and validation
-            train_size = int(0.8 * len(dataset))
-            val_size = len(dataset) - train_size
-            train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
-            
-        except Exception as e:
-            logger.warning(f"Error loading Oxford-IIIT Pet: {e}")
-            logger.warning("Falling back to CIFAR-10")
-            train_dataset = datasets.CIFAR10(root=DATA_ROOT, train=True, download=True, transform=transform_train)
-            val_dataset = datasets.CIFAR10(root=DATA_ROOT, train=False, download=True, transform=transform_val)
+        # Use CIFAR-10 directly
+        logger.info("Using CIFAR-10 dataset for AlexNet...")
+        train_dataset = datasets.CIFAR10(root=DATA_ROOT, train=True, download=True, transform=transform_train)
+        val_dataset = datasets.CIFAR10(root=DATA_ROOT, train=False, download=True, transform=transform_val)
         
         train_loader = DataLoader(train_dataset, batch_size=self.batch_size, shuffle=True, num_workers=4)
         val_loader = DataLoader(val_dataset, batch_size=self.batch_size, shuffle=False, num_workers=4)
@@ -530,29 +519,10 @@ class VGG16Finetuner(ModelFinetuner):
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ])
         
-        # Try Flowers dataset first
-        try:
-            logger.info("Loading Flowers102 dataset for VGG16...")
-            dataset = datasets.Flowers102(root=DATA_ROOT, download=True, transform=transform_train)
-            
-            # Split into train/val
-            train_size = int(0.8 * len(dataset))
-            val_size = len(dataset) - train_size
-            train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
-            
-        except Exception as e:
-            logger.warning(f"Error loading Flowers102: {e}")
-            
-            # Try STL10 next
-            try:
-                logger.info("Trying STL10 dataset...")
-                train_dataset = datasets.STL10(root=DATA_ROOT, split='train', download=True, transform=transform_train)
-                val_dataset = datasets.STL10(root=DATA_ROOT, split='test', download=True, transform=transform_val)
-            except Exception as e:
-                logger.warning(f"Error loading STL10: {e}")
-                logger.warning("Falling back to CIFAR-10")
-                train_dataset = datasets.CIFAR10(root=DATA_ROOT, train=True, download=True, transform=transform_train)
-                val_dataset = datasets.CIFAR10(root=DATA_ROOT, train=False, download=True, transform=transform_val)
+        # Use CIFAR-10 directly - more reliable
+        logger.info("Using CIFAR-10 dataset for VGG16...")
+        train_dataset = datasets.CIFAR10(root=DATA_ROOT, train=True, download=True, transform=transform_train)
+        val_dataset = datasets.CIFAR10(root=DATA_ROOT, train=False, download=True, transform=transform_val)
         
         train_loader = DataLoader(train_dataset, batch_size=self.batch_size, shuffle=True, num_workers=4)
         val_loader = DataLoader(val_dataset, batch_size=self.batch_size, shuffle=False, num_workers=4)
@@ -611,43 +581,10 @@ class SqueezeNetFinetuner(ModelFinetuner):
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ])
         
-        # Try SVHN first (good for SqueezeNet)
-        try:
-            logger.info("Loading SVHN dataset for SqueezeNet...")
-            train_dataset = datasets.SVHN(root=DATA_ROOT, split='train', download=True, transform=transform_train)
-            val_dataset = datasets.SVHN(root=DATA_ROOT, split='test', download=True, transform=transform_val)
-            
-        except Exception as e:
-            logger.warning(f"Error loading SVHN: {e}")
-            
-            # Try FashionMNIST next
-            try:
-                logger.info("Trying FashionMNIST...")
-                fashion_transform_train = transforms.Compose([
-                    transforms.Resize(256),
-                    transforms.RandomCrop(224),
-                    transforms.RandomHorizontalFlip(),
-                    transforms.ToTensor(),
-                    transforms.Lambda(lambda x: x.repeat(3, 1, 1)),  # Convert grayscale to RGB
-                    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-                ])
-                
-                fashion_transform_val = transforms.Compose([
-                    transforms.Resize(256),
-                    transforms.CenterCrop(224),
-                    transforms.ToTensor(),
-                    transforms.Lambda(lambda x: x.repeat(3, 1, 1)),  # Convert grayscale to RGB
-                    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-                ])
-                
-                train_dataset = datasets.FashionMNIST(root=DATA_ROOT, train=True, download=True, transform=fashion_transform_train)
-                val_dataset = datasets.FashionMNIST(root=DATA_ROOT, train=False, download=True, transform=fashion_transform_val)
-                
-            except Exception as e:
-                logger.warning(f"Error loading FashionMNIST: {e}")
-                logger.warning("Falling back to CIFAR-10")
-                train_dataset = datasets.CIFAR10(root=DATA_ROOT, train=True, download=True, transform=transform_train)
-                val_dataset = datasets.CIFAR10(root=DATA_ROOT, train=False, download=True, transform=transform_val)
+        # Use CIFAR-10 directly for reliability
+        logger.info("Using CIFAR-10 dataset for SqueezeNet...")
+        train_dataset = datasets.CIFAR10(root=DATA_ROOT, train=True, download=True, transform=transform_train)
+        val_dataset = datasets.CIFAR10(root=DATA_ROOT, train=False, download=True, transform=transform_val)
         
         train_loader = DataLoader(train_dataset, batch_size=self.batch_size, shuffle=True, num_workers=4)
         val_loader = DataLoader(val_dataset, batch_size=self.batch_size, shuffle=False, num_workers=4)
