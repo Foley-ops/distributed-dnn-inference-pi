@@ -121,14 +121,15 @@ class ProgressBar:
             else:
                 eta_str = ""
                 
-            # Use carriage return to override the current line
-            sys.stdout.write(f"\r{self.description}: [{bar}] {percent}%{eta_str}")
+            # Use carriage return to override the current line with padding to clear previous text
+            output = f"\r{self.description}: [{bar}] {percent}%{eta_str}".ljust(100)
+            sys.stdout.write(output)
             sys.stdout.flush()
             
             # Print a newline when complete
             if current >= self.total:
                 elapsed_str = f"{elapsed:.1f}s" if elapsed < 120 else f"{elapsed/60:.1f}m"
-                print(f"\r{self.description}: [{bar}] {percent}% | Completed in {elapsed_str}")
+                print(f"\r{self.description}: [{bar}] {percent}% | Completed in {elapsed_str}".ljust(100))
                 
     def finish(self):
         """Mark the progress as complete."""
@@ -593,26 +594,15 @@ class MobileNetV2Evaluator(ModelEvaluator):
         logger.info("Loading CIFAR-10 dataset for MobileNetV2 evaluation...")
         
         # Show loading progress (useful for NFS mounts)
-        print("\nLoading CIFAR-10 dataset from NFS...")
-        progress = ProgressBar(total=100, description="Loading CIFAR-10 dataset")
-        
-        # Using a callback to monitor loading progress
-        class ProgressCallback:
-            def __call__(self, count):
-                # CIFAR-10 has 5 batches for training data
-                # so we need to map the progress differently
-                progress.update(count * 20)  # 5 batches = 100%
-        
         dataset = datasets.CIFAR10(
             root=DATA_ROOT, 
             train=False, 
             download=True, 
             transform=transform
         )
-        progress.finish()
         
         # Create random subset
-        subset_dataset = RandomSubsetDataset(dataset, sample_size=self.dataset_size)
+        subset_dataset = RandomSubsetDataset(dataset, sample_size=self.dataset_size, balanced=self.balanced_sampling)
         logger.info(f"Using random subset of {len(subset_dataset)} samples from {len(dataset)} total")
         
         return DataLoader(subset_dataset, batch_size=self.batch_size, shuffle=True, 
@@ -644,34 +634,16 @@ class DeepLabV3Evaluator(ModelEvaluator):
         # Try Pascal VOC segmentation dataset
         try:
             logger.info("Loading VOCSegmentation dataset...")
-            print("\nLoading VOCSegmentation dataset from NFS...")
-            progress = ProgressBar(total=100, description="Loading VOCSegmentation")
-            
-            # The dataset doesn't provide progress callbacks, so we'll just simulate it
-            for i in range(0, 101, 10):
-                progress.update(i)
-                time.sleep(0.1)  # Simulate loading
-            
             dataset = datasets.VOCSegmentation(root=DATA_ROOT, year='2012', 
-                                            image_set='val', download=True,
-                                            transform=transform)
-            progress.finish()
+                                             image_set='val', download=True,
+                                             transform=transform)
         except Exception as e:
             logger.warning(f"Error loading VOCSegmentation: {e}")
             logger.warning("Using CIFAR-10 instead (not ideal for segmentation)")
-            
-            print("\nLoading CIFAR-10 dataset from NFS (fallback)...")
-            progress = ProgressBar(total=100, description="Loading CIFAR-10")
-            
-            for i in range(0, 101, 10):
-                progress.update(i)
-                time.sleep(0.05)  # Simulate loading
-                
             dataset = datasets.CIFAR10(root=DATA_ROOT, train=False, download=True, transform=transform)
-            progress.finish()
         
         # Create random subset
-        subset_dataset = RandomSubsetDataset(dataset, sample_size=self.dataset_size)
+        subset_dataset = RandomSubsetDataset(dataset, sample_size=self.dataset_size, balanced=self.balanced_sampling)
         logger.info(f"Using random subset of {len(subset_dataset)} samples from {len(dataset)} total")
         
         # Use smaller batch size for this model
@@ -742,32 +714,14 @@ class InceptionEvaluator(ModelEvaluator):
         # Try STL10 first (better images), fall back to CIFAR-10
         try:
             logger.info("Loading STL10 dataset for Inception...")
-            print("\nLoading STL10 dataset from NFS...")
-            progress = ProgressBar(total=100, description="Loading STL10 dataset")
-            
-            # Update progress during loading simulation
-            for i in range(0, 101, 5):
-                progress.update(i)
-                time.sleep(0.05)  # Simulate loading time for display
-                
             dataset = datasets.STL10(root=DATA_ROOT, split='test', download=True, transform=transform)
-            progress.finish()
         except Exception as e:
             logger.warning(f"Error loading STL10: {e}")
             logger.warning("Falling back to CIFAR-10")
-            
-            print("\nLoading CIFAR-10 dataset from NFS (fallback)...")
-            progress = ProgressBar(total=100, description="Loading CIFAR-10 dataset")
-            
-            for i in range(0, 101, 10):
-                progress.update(i)
-                time.sleep(0.05)  # Simulate loading
-                
             dataset = datasets.CIFAR10(root=DATA_ROOT, train=False, download=True, transform=transform)
-            progress.finish()
         
         # Create random subset
-        subset_dataset = RandomSubsetDataset(dataset, sample_size=self.dataset_size)
+        subset_dataset = RandomSubsetDataset(dataset, sample_size=self.dataset_size, balanced=self.balanced_sampling)
         logger.info(f"Using random subset of {len(subset_dataset)} samples from {len(dataset)} total")
         
         return DataLoader(subset_dataset, batch_size=self.batch_size, shuffle=True, 
