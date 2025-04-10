@@ -238,7 +238,7 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
             # Create a more explicit RPC backend options
             rpc_backend_options = rpc.TensorPipeRpcBackendOptions(
                 num_worker_threads=4,
-                rpc_timeout=600,
+                rpc_timeout=1200,
                 _transports=["uv"],  # Force using UV transport only
                 init_method=f"tcp://0.0.0.0:{master_port}"  # Explicit init method
             )
@@ -352,7 +352,7 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
                 # Create a more explicit RPC backend options
                 rpc_backend_options = rpc.TensorPipeRpcBackendOptions(
                     num_worker_threads=4,
-                    rpc_timeout=600,
+                    rpc_timeout=1200,
                     _transports=["uv"],  # Force using UV transport only
                     init_method=f"tcp://{master_addr}:{master_port}"  # Explicit init method
                 )
