@@ -45,6 +45,10 @@ COCO_PATH = os.path.join(DATA_ROOT, "coco")
 MODEL_PATH = os.path.join(DATA_ROOT, "pretrained_models")
 FINE_TUNED_MODEL_PATH = os.path.join(DATA_ROOT, "fine_tuned_models")
 
+# Local cache directory for faster loading
+LOCAL_CACHE_DIR = "/tmp/pytorch_datasets"
+os.makedirs(LOCAL_CACHE_DIR, exist_ok=True)
+
 os.environ['TORCH_HOME'] = MODEL_PATH
 
 RESULTS_DIR = os.path.join(DATA_ROOT, "single_device_results")
@@ -54,9 +58,11 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 GPU_NAME = torch.cuda.get_device_name(0) if torch.cuda.is_available() else "None"
 
 DEFAULT_BATCH_SIZE = 16
-DEFAULT_NUM_WORKERS = 4
+DEFAULT_NUM_WORKERS = 2  # Reduced from 4 for Raspberry Pi
 DEFAULT_NUM_INFERENCES = 100
 DEFAULT_WARMUP_ITERATIONS = 10
+DEFAULT_DATASET_SIZE = 1000  # Default number of samples to use
+DEFAULT_IMAGE_SIZE = 160  # Reduced resolution for faster processing
 
 # Models
 AVAILABLE_MODELS = [
@@ -68,6 +74,39 @@ AVAILABLE_MODELS = [
     "vgg16", 
     "squeezenet"
 ]
+
+#############################################
+# Random Subset Dataset Wrapper
+#############################################
+
+class RandomSubsetDataset(torch.utils.data.Dataset):
+    """Class for selecting a random subset of a dataset."""
+    
+    def __init__(self, dataset, sample_size=1000):
+        """
+        Initialize with a dataset and sample size.
+        
+        Args:
+            dataset: The source dataset
+            sample_size: Number of random samples to select
+        """
+        self.dataset = dataset
+        # Ensure we don't try to get more samples than available
+        sample_size = min(sample_size, len(dataset))
+        self.indices = torch.randperm(len(dataset))[:sample_size]
+        
+        # Copy dataset attributes
+        self.classes = dataset.classes if hasattr(dataset, 'classes') else None
+        self.targets = [dataset.targets[i] if hasattr(dataset, 'targets') and isinstance(dataset.targets, list) 
+                        else None for i in self.indices] if hasattr(dataset, 'targets') else None
+        
+    def __getitem__(self, idx):
+        """Get a dataset item by index."""
+        return self.dataset[self.indices[idx]]
+        
+    def __len__(self):
+        """Get dataset length."""
+        return len(self.indices)
 
 #############################################
 # Metrics Collection Utilities
@@ -242,7 +281,9 @@ class ModelEvaluator:
         raise NotImplementedError("Subclass must implement _create_data_loader()")
     
     def __init__(self, model_name, batch_size=DEFAULT_BATCH_SIZE, 
-                num_workers=DEFAULT_NUM_WORKERS, num_inferences=DEFAULT_NUM_INFERENCES):
+                num_workers=DEFAULT_NUM_WORKERS, num_inferences=DEFAULT_NUM_INFERENCES,
+                dataset_size=DEFAULT_DATASET_SIZE, image_size=DEFAULT_IMAGE_SIZE,
+                timeout=60):
         """
         Initialize the model evaluator.
         
@@ -251,11 +292,17 @@ class ModelEvaluator:
             batch_size (int): Batch size for evaluation
             num_workers (int): Number of workers for data loading
             num_inferences (int): Number of inferences to run
+            dataset_size (int): Number of samples to use from dataset
+            image_size (int): Resolution of images for evaluation
+            timeout (int): Timeout for data loading operations
         """
         self.model_name = model_name
         self.batch_size = batch_size
         self.num_workers = num_workers
         self.num_inferences = num_inferences
+        self.dataset_size = dataset_size
+        self.image_size = image_size
+        self.timeout = timeout
         self.device = DEVICE
         self.metrics = MetricsCollector()
         
@@ -310,20 +357,29 @@ class ModelEvaluator:
         try:
             # First try with download=False to check if it's already downloaded
             kwargs['download'] = False
-            dataset_class(root=DATA_ROOT, **kwargs)
-            logger.info(f"Dataset {dataset_class.__name__} already downloaded.")
+            # Use local cache directory for faster access
+            dataset_class(root=LOCAL_CACHE_DIR, **kwargs)
+            logger.info(f"Dataset {dataset_class.__name__} already downloaded to local cache.")
             return True
         except (RuntimeError, FileNotFoundError) as e:
-            logger.info(f"Dataset {dataset_class.__name__} not found: {e}. Downloading...")
+            logger.info(f"Dataset {dataset_class.__name__} not found in local cache: {e}. Downloading...")
             try:
                 # Try again with download=True
                 kwargs['download'] = True
-                dataset_class(root=DATA_ROOT, **kwargs)
-                logger.info(f"Successfully downloaded dataset {dataset_class.__name__}.")
+                dataset_class(root=LOCAL_CACHE_DIR, **kwargs)
+                logger.info(f"Successfully downloaded dataset {dataset_class.__name__} to local cache.")
                 return True
             except Exception as e:
-                logger.error(f"Error downloading dataset {dataset_class.__name__}: {e}")
-                return False
+                logger.error(f"Error downloading dataset to local cache: {e}")
+                logger.info(f"Trying to use dataset from DATA_ROOT: {DATA_ROOT}")
+                try:
+                    # Fall back to using DATA_ROOT
+                    kwargs['download'] = True
+                    dataset_class(root=DATA_ROOT, **kwargs)
+                    return True
+                except Exception as e2:
+                    logger.error(f"Error downloading dataset to DATA_ROOT: {e2}")
+                    return False
     
     def _preprocess_input(self, inputs):
         """Preprocess the inputs if needed. Can be overridden by subclasses."""
@@ -397,6 +453,8 @@ class ModelEvaluator:
         self.results["gpu_name"] = GPU_NAME
         self.results["batch_size"] = self.batch_size
         self.results["num_inferences"] = self.num_inferences
+        self.results["dataset_size"] = self.dataset_size
+        self.results["image_size"] = self.image_size
         
         return self.results
     
@@ -445,18 +503,22 @@ class MobileNetV2Evaluator(ModelEvaluator):
     
     def _create_data_loader(self):
         transform = transforms.Compose([
-            transforms.Resize(224),
-            transforms.CenterCrop(224),
+            transforms.Resize(self.image_size),
+            transforms.CenterCrop(self.image_size),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ])
         
         # Try CIFAR-10 for MobileNetV2 (good balance of size and complexity)
         logger.info("Loading CIFAR-10 dataset for MobileNetV2 evaluation...")
-        dataset = datasets.CIFAR10(root=DATA_ROOT, train=False, download=True, transform=transform)
+        dataset = datasets.CIFAR10(root=LOCAL_CACHE_DIR, train=False, download=True, transform=transform)
         
-        return DataLoader(dataset, batch_size=self.batch_size, shuffle=True, 
-                          num_workers=self.num_workers, pin_memory=True)
+        # Create random subset
+        subset_dataset = RandomSubsetDataset(dataset, sample_size=self.dataset_size)
+        logger.info(f"Using random subset of {len(subset_dataset)} samples from {len(dataset)} total")
+        
+        return DataLoader(subset_dataset, batch_size=self.batch_size, shuffle=True, 
+                          num_workers=self.num_workers, pin_memory=True, timeout=self.timeout)
 
 
 class DeepLabV3Evaluator(ModelEvaluator):
@@ -476,7 +538,7 @@ class DeepLabV3Evaluator(ModelEvaluator):
     def _create_data_loader(self):
         # Use smaller size for Raspberry Pi
         transform = transforms.Compose([
-            transforms.Resize((256, 256)), 
+            transforms.Resize((self.image_size, self.image_size)), 
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ])
@@ -484,17 +546,21 @@ class DeepLabV3Evaluator(ModelEvaluator):
         # Try Pascal VOC segmentation dataset
         try:
             logger.info("Loading VOCSegmentation dataset...")
-            dataset = datasets.VOCSegmentation(root=DATA_ROOT, year='2012', 
+            dataset = datasets.VOCSegmentation(root=LOCAL_CACHE_DIR, year='2012', 
                                              image_set='val', download=True,
                                              transform=transform)
         except Exception as e:
             logger.warning(f"Error loading VOCSegmentation: {e}")
             logger.warning("Using CIFAR-10 instead (not ideal for segmentation)")
-            dataset = datasets.CIFAR10(root=DATA_ROOT, train=False, download=True, transform=transform)
+            dataset = datasets.CIFAR10(root=LOCAL_CACHE_DIR, train=False, download=True, transform=transform)
+        
+        # Create random subset
+        subset_dataset = RandomSubsetDataset(dataset, sample_size=self.dataset_size)
+        logger.info(f"Using random subset of {len(subset_dataset)} samples from {len(dataset)} total")
         
         # Use smaller batch size for this model
-        return DataLoader(dataset, batch_size=max(1, self.batch_size//4), shuffle=True, 
-                          num_workers=self.num_workers, pin_memory=True)
+        return DataLoader(subset_dataset, batch_size=max(1, self.batch_size//4), shuffle=True, 
+                          num_workers=self.num_workers, pin_memory=True, timeout=self.timeout)
     
     def _calculate_accuracy(self, outputs, targets):
         """For segmentation models, use pixel accuracy."""
@@ -548,10 +614,11 @@ class InceptionEvaluator(ModelEvaluator):
         return model
     
     def _create_data_loader(self):
-        # Inception v3 requires 299x299 input
+        # Inception v3 requires minimum 299x299 input - use smaller if specified
+        inception_size = max(299, self.image_size)
         transform = transforms.Compose([
-            transforms.Resize(299),
-            transforms.CenterCrop(299),
+            transforms.Resize(inception_size),
+            transforms.CenterCrop(inception_size),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ])
@@ -559,14 +626,18 @@ class InceptionEvaluator(ModelEvaluator):
         # Try STL10 first (better images), fall back to CIFAR-10
         try:
             logger.info("Loading STL10 dataset for Inception...")
-            dataset = datasets.STL10(root=DATA_ROOT, split='test', download=True, transform=transform)
+            dataset = datasets.STL10(root=LOCAL_CACHE_DIR, split='test', download=True, transform=transform)
         except Exception as e:
             logger.warning(f"Error loading STL10: {e}")
             logger.warning("Falling back to CIFAR-10")
-            dataset = datasets.CIFAR10(root=DATA_ROOT, train=False, download=True, transform=transform)
+            dataset = datasets.CIFAR10(root=LOCAL_CACHE_DIR, train=False, download=True, transform=transform)
         
-        return DataLoader(dataset, batch_size=self.batch_size, shuffle=True, 
-                          num_workers=self.num_workers, pin_memory=True)
+        # Create random subset
+        subset_dataset = RandomSubsetDataset(dataset, sample_size=self.dataset_size)
+        logger.info(f"Using random subset of {len(subset_dataset)} samples from {len(dataset)} total")
+        
+        return DataLoader(subset_dataset, batch_size=self.batch_size, shuffle=True, 
+                          num_workers=self.num_workers, pin_memory=True, timeout=self.timeout)
     
     def _calculate_accuracy(self, outputs, targets):
         """Handle the auxiliary outputs from Inception."""
@@ -594,18 +665,22 @@ class ResNet18Evaluator(ModelEvaluator):
     
     def _create_data_loader(self):
         transform = transforms.Compose([
-            transforms.Resize(224),
-            transforms.CenterCrop(224),
+            transforms.Resize(self.image_size),
+            transforms.CenterCrop(self.image_size),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ])
         
         # Use CIFAR-10 instead of CIFAR-100 for better accuracy
         logger.info("Loading CIFAR-10 dataset for ResNet18 evaluation...")
-        dataset = datasets.CIFAR10(root=DATA_ROOT, train=False, download=True, transform=transform)
+        dataset = datasets.CIFAR10(root=LOCAL_CACHE_DIR, train=False, download=True, transform=transform)
         
-        return DataLoader(dataset, batch_size=self.batch_size, shuffle=True, 
-                          num_workers=self.num_workers, pin_memory=True)
+        # Create random subset
+        subset_dataset = RandomSubsetDataset(dataset, sample_size=self.dataset_size)
+        logger.info(f"Using random subset of {len(subset_dataset)} samples from {len(dataset)} total")
+        
+        return DataLoader(subset_dataset, batch_size=self.batch_size, shuffle=True, 
+                          num_workers=self.num_workers, pin_memory=True, timeout=self.timeout)
 
 
 class AlexNetEvaluator(ModelEvaluator):
@@ -623,19 +698,23 @@ class AlexNetEvaluator(ModelEvaluator):
         return model
     
     def _create_data_loader(self):
-            transform = transforms.Compose([
-                transforms.Resize(224),
-                transforms.CenterCrop(224),
-                transforms.ToTensor(),
-                transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-            ])
+        transform = transforms.Compose([
+            transforms.Resize(self.image_size),
+            transforms.CenterCrop(self.image_size),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ])
             
-            # Use CIFAR-10 directly to match fine-tuned model
-            logger.info("Loading CIFAR-10 dataset for AlexNet evaluation...")
-            dataset = datasets.CIFAR10(root=DATA_ROOT, train=False, download=True, transform=transform)
+        # Use CIFAR-10 directly to match fine-tuned model
+        logger.info("Loading CIFAR-10 dataset for AlexNet evaluation...")
+        dataset = datasets.CIFAR10(root=LOCAL_CACHE_DIR, train=False, download=True, transform=transform)
             
-            return DataLoader(dataset, batch_size=self.batch_size, shuffle=True, 
-                            num_workers=self.num_workers, pin_memory=True)
+        # Create random subset
+        subset_dataset = RandomSubsetDataset(dataset, sample_size=self.dataset_size)
+        logger.info(f"Using random subset of {len(subset_dataset)} samples from {len(dataset)} total")
+            
+        return DataLoader(subset_dataset, batch_size=self.batch_size, shuffle=True, 
+                         num_workers=self.num_workers, pin_memory=True, timeout=self.timeout)
 
 
 class VGG16Evaluator(ModelEvaluator):
@@ -654,18 +733,22 @@ class VGG16Evaluator(ModelEvaluator):
     
     def _create_data_loader(self):
         transform = transforms.Compose([
-            transforms.Resize(224),
-            transforms.CenterCrop(224),
+            transforms.Resize(self.image_size),
+            transforms.CenterCrop(self.image_size),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ])
         
         # Use CIFAR-10 directly to match fine-tuned model
         logger.info("Loading CIFAR-10 dataset for VGG16 evaluation...")
-        dataset = datasets.CIFAR10(root=DATA_ROOT, train=False, download=True, transform=transform)
+        dataset = datasets.CIFAR10(root=LOCAL_CACHE_DIR, train=False, download=True, transform=transform)
         
-        return DataLoader(dataset, batch_size=self.batch_size, shuffle=True, 
-                          num_workers=self.num_workers, pin_memory=True)
+        # Create random subset
+        subset_dataset = RandomSubsetDataset(dataset, sample_size=self.dataset_size)
+        logger.info(f"Using random subset of {len(subset_dataset)} samples from {len(dataset)} total")
+        
+        return DataLoader(subset_dataset, batch_size=self.batch_size, shuffle=True, 
+                          num_workers=self.num_workers, pin_memory=True, timeout=self.timeout)
 
 
 class SqueezeNetEvaluator(ModelEvaluator):
@@ -683,8 +766,8 @@ class SqueezeNetEvaluator(ModelEvaluator):
     
     def _create_data_loader(self):
         transform = transforms.Compose([
-            transforms.Resize(224),
-            transforms.CenterCrop(224),
+            transforms.Resize(self.image_size),
+            transforms.CenterCrop(self.image_size),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ])
@@ -692,7 +775,7 @@ class SqueezeNetEvaluator(ModelEvaluator):
         # Try SVHN first (good for SqueezeNet)
         try:
             logger.info("Loading SVHN dataset for SqueezeNet...")
-            dataset = datasets.SVHN(root=DATA_ROOT, split='test', download=True, 
+            dataset = datasets.SVHN(root=LOCAL_CACHE_DIR, split='test', download=True, 
                                    transform=transform)
         except Exception as e:
             logger.warning(f"Error loading SVHN: {e}")
@@ -700,20 +783,24 @@ class SqueezeNetEvaluator(ModelEvaluator):
             try:
                 logger.info("Trying FashionMNIST...")
                 fashion_transform = transforms.Compose([
-                    transforms.Resize(224),
-                    transforms.CenterCrop(224),
+                    transforms.Resize(self.image_size),
+                    transforms.CenterCrop(self.image_size),
                     transforms.ToTensor(),
                     transforms.Lambda(lambda x: x.repeat(3, 1, 1)),  # Convert grayscale to RGB
                     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
                 ])
-                dataset = datasets.FashionMNIST(root=DATA_ROOT, train=False, download=True, transform=fashion_transform)
+                dataset = datasets.FashionMNIST(root=LOCAL_CACHE_DIR, train=False, download=True, transform=fashion_transform)
             except Exception as e:
                 logger.warning(f"Error loading FashionMNIST: {e}")
                 logger.warning("Falling back to CIFAR-10")
-                dataset = datasets.CIFAR10(root=DATA_ROOT, train=False, download=True, transform=transform)
+                dataset = datasets.CIFAR10(root=LOCAL_CACHE_DIR, train=False, download=True, transform=transform)
         
-        return DataLoader(dataset, batch_size=self.batch_size, shuffle=True, 
-                          num_workers=self.num_workers, pin_memory=True)
+        # Create random subset
+        subset_dataset = RandomSubsetDataset(dataset, sample_size=self.dataset_size)
+        logger.info(f"Using random subset of {len(subset_dataset)} samples from {len(dataset)} total")
+        
+        return DataLoader(subset_dataset, batch_size=self.batch_size, shuffle=True, 
+                          num_workers=self.num_workers, pin_memory=True, timeout=self.timeout)
 
 
 #############################################
@@ -767,6 +854,18 @@ def parse_args():
     parser.add_argument("--aggregate", action="store_true", 
                         help="Aggregate results from all models into a single file")
     
+    parser.add_argument("--dataset-size", type=int, default=DEFAULT_DATASET_SIZE,
+                        help=f"Size of random subset to use from each dataset (default: {DEFAULT_DATASET_SIZE})")
+    
+    parser.add_argument("--image-size", type=int, default=DEFAULT_IMAGE_SIZE,
+                        help=f"Size of images for evaluation (default: {DEFAULT_IMAGE_SIZE})")
+    
+    parser.add_argument("--timeout", type=int, default=60,
+                        help=f"Timeout for data loading operations in seconds (default: 60)")
+    
+    parser.add_argument("--local-cache", type=str, default=LOCAL_CACHE_DIR,
+                        help=f"Local directory to cache datasets (default: {LOCAL_CACHE_DIR})")
+    
     return parser.parse_args()
 
 
@@ -777,11 +876,20 @@ def main():
     # Configure output directory
     os.makedirs(args.output_dir, exist_ok=True)
     
+    # Update global cache dir if specified
+    global LOCAL_CACHE_DIR
+    LOCAL_CACHE_DIR = args.local_cache
+    os.makedirs(LOCAL_CACHE_DIR, exist_ok=True)
+    
     # Log system information
     logger.info(f"Device: {DEVICE}")
     if torch.cuda.is_available():
         logger.info(f"GPU: {GPU_NAME}")
         logger.info(f"CUDA Version: {torch.version.cuda}")
+    
+    logger.info(f"Using dataset size: {args.dataset_size}")
+    logger.info(f"Using image size: {args.image_size}")
+    logger.info(f"Local cache directory: {LOCAL_CACHE_DIR}")
     
     # Run evaluations for all specified models
     all_results = {}
@@ -796,7 +904,10 @@ def main():
                 model_name=model_name,
                 batch_size=args.batch_size,
                 num_workers=args.num_workers,
-                num_inferences=args.num_inferences
+                num_inferences=args.num_inferences,
+                dataset_size=args.dataset_size,
+                image_size=args.image_size,
+                timeout=args.timeout
             )
             
             # Run eval
