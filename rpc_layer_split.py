@@ -71,8 +71,14 @@ class MobileNetV2Shard1(ModelShardBase):
     
     def forward(self, x_rref):
         logging.info(f"MobileNetV2Shard1: Received input tensor with shape {x_rref.to_here().shape}")
+
         x = x_rref.to_here().to(self.device)
+
+        worker_inference_start_time = time.time() # record start time
         output = self.features_first_half(x)
+        worker_inference_total_time = time.time() - worker_inference_start_time # calculate time spent on inference 
+        logging.info(f"Time spent on inference: {worker_inference_total_time}")
+
         logging.info(f"MobileNetV2Shard1: Produced output tensor with shape {output.shape}")
         # Return to CPU for RPC transfer
         return output.cpu()
@@ -107,11 +113,17 @@ class MobileNetV2Shard2(ModelShardBase):
     
     def forward(self, x_rref):
         logging.info(f"MobileNetV2Shard2: Received input tensor with shape {x_rref.to_here().shape}")
+
         x = x_rref.to_here().to(self.device)
+
+        worker_inference_start_time = time.time() # record start time
         x = self.features_second_half(x)
         x = nn.functional.adaptive_avg_pool2d(x, (1, 1))
         x = torch.flatten(x, 1)
         x = self.classifier(x)
+        worker_inference_total_time = time.time() - worker_inference_start_time # calculate time spent on inference 
+        logging.info(f"Time spent on inference: {worker_inference_total_time}")
+
         logging.info(f"MobileNetV2Shard2: Produced output tensor with shape {x.shape}")
         # Return to CPU for RPC transfer
         return x.cpu()
