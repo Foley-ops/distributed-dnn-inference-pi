@@ -291,7 +291,8 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
             start_time = time.time()
             
             total_images = 0
-            
+            num_correct = 0
+
             with torch.no_grad():
                 for i, (images, labels) in enumerate(test_loader):
                     if i == num_batches:
@@ -303,11 +304,15 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
                     # log the predicted vs actual labels
                     _, predicted = torch.max(output.data, 1)
                     logger.info(f"Predicted: {predicted[:5]} | Actual: {labels[:5]}")
+
+                    if (predicted[:5] == labels[:5]):
+                        num_correct += len(images) 
+
                     total_images += len(images)
 
             elapsed_time = time.time() - start_time
             logger.info(f"Inference completed on {total_images} images.")
-
+            logger.info(f"Final Accuracy: {1.0 * num_correct / total_images * 100.0}") # only works with batch_size=1 for now
             
             logger.info(f"Inference completed in {elapsed_time:.4f} seconds")
             
