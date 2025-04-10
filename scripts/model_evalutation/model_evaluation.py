@@ -45,9 +45,7 @@ COCO_PATH = os.path.join(DATA_ROOT, "coco")
 MODEL_PATH = os.path.join(DATA_ROOT, "pretrained_models")
 FINE_TUNED_MODEL_PATH = os.path.join(DATA_ROOT, "fine_tuned_models")
 
-# Local cache directory for faster loading
-LOCAL_CACHE_DIR = "/tmp/pytorch_datasets"
-os.makedirs(LOCAL_CACHE_DIR, exist_ok=True)
+# No local cache, use NFS mount as requested
 
 os.environ['TORCH_HOME'] = MODEL_PATH
 
@@ -357,29 +355,20 @@ class ModelEvaluator:
         try:
             # First try with download=False to check if it's already downloaded
             kwargs['download'] = False
-            # Use local cache directory for faster access
-            dataset_class(root=LOCAL_CACHE_DIR, **kwargs)
-            logger.info(f"Dataset {dataset_class.__name__} already downloaded to local cache.")
+            dataset_class(root=DATA_ROOT, **kwargs)
+            logger.info(f"Dataset {dataset_class.__name__} already downloaded.")
             return True
         except (RuntimeError, FileNotFoundError) as e:
-            logger.info(f"Dataset {dataset_class.__name__} not found in local cache: {e}. Downloading...")
+            logger.info(f"Dataset {dataset_class.__name__} not found: {e}. Downloading...")
             try:
                 # Try again with download=True
                 kwargs['download'] = True
-                dataset_class(root=LOCAL_CACHE_DIR, **kwargs)
-                logger.info(f"Successfully downloaded dataset {dataset_class.__name__} to local cache.")
+                dataset_class(root=DATA_ROOT, **kwargs)
+                logger.info(f"Successfully downloaded dataset {dataset_class.__name__}.")
                 return True
             except Exception as e:
-                logger.error(f"Error downloading dataset to local cache: {e}")
-                logger.info(f"Trying to use dataset from DATA_ROOT: {DATA_ROOT}")
-                try:
-                    # Fall back to using DATA_ROOT
-                    kwargs['download'] = True
-                    dataset_class(root=DATA_ROOT, **kwargs)
-                    return True
-                except Exception as e2:
-                    logger.error(f"Error downloading dataset to DATA_ROOT: {e2}")
-                    return False
+                logger.error(f"Error downloading dataset: {e}")
+                return False
     
     def _preprocess_input(self, inputs):
         """Preprocess the inputs if needed. Can be overridden by subclasses."""
@@ -511,7 +500,7 @@ class MobileNetV2Evaluator(ModelEvaluator):
         
         # Try CIFAR-10 for MobileNetV2 (good balance of size and complexity)
         logger.info("Loading CIFAR-10 dataset for MobileNetV2 evaluation...")
-        dataset = datasets.CIFAR10(root=LOCAL_CACHE_DIR, train=False, download=True, transform=transform)
+        dataset = datasets.CIFAR10(root=DATA_ROOT, train=False, download=True, transform=transform)
         
         # Create random subset
         subset_dataset = RandomSubsetDataset(dataset, sample_size=self.dataset_size)
@@ -546,13 +535,13 @@ class DeepLabV3Evaluator(ModelEvaluator):
         # Try Pascal VOC segmentation dataset
         try:
             logger.info("Loading VOCSegmentation dataset...")
-            dataset = datasets.VOCSegmentation(root=LOCAL_CACHE_DIR, year='2012', 
+            dataset = datasets.VOCSegmentation(root=DATA_ROOT, year='2012', 
                                              image_set='val', download=True,
                                              transform=transform)
         except Exception as e:
             logger.warning(f"Error loading VOCSegmentation: {e}")
             logger.warning("Using CIFAR-10 instead (not ideal for segmentation)")
-            dataset = datasets.CIFAR10(root=LOCAL_CACHE_DIR, train=False, download=True, transform=transform)
+            dataset = datasets.CIFAR10(root=DATA_ROOT, train=False, download=True, transform=transform)
         
         # Create random subset
         subset_dataset = RandomSubsetDataset(dataset, sample_size=self.dataset_size)
@@ -626,11 +615,11 @@ class InceptionEvaluator(ModelEvaluator):
         # Try STL10 first (better images), fall back to CIFAR-10
         try:
             logger.info("Loading STL10 dataset for Inception...")
-            dataset = datasets.STL10(root=LOCAL_CACHE_DIR, split='test', download=True, transform=transform)
+            dataset = datasets.STL10(root=DATA_ROOT, split='test', download=True, transform=transform)
         except Exception as e:
             logger.warning(f"Error loading STL10: {e}")
             logger.warning("Falling back to CIFAR-10")
-            dataset = datasets.CIFAR10(root=LOCAL_CACHE_DIR, train=False, download=True, transform=transform)
+            dataset = datasets.CIFAR10(root=DATA_ROOT, train=False, download=True, transform=transform)
         
         # Create random subset
         subset_dataset = RandomSubsetDataset(dataset, sample_size=self.dataset_size)
@@ -673,7 +662,7 @@ class ResNet18Evaluator(ModelEvaluator):
         
         # Use CIFAR-10 instead of CIFAR-100 for better accuracy
         logger.info("Loading CIFAR-10 dataset for ResNet18 evaluation...")
-        dataset = datasets.CIFAR10(root=LOCAL_CACHE_DIR, train=False, download=True, transform=transform)
+        dataset = datasets.CIFAR10(root=DATA_ROOT, train=False, download=True, transform=transform)
         
         # Create random subset
         subset_dataset = RandomSubsetDataset(dataset, sample_size=self.dataset_size)
@@ -707,7 +696,7 @@ class AlexNetEvaluator(ModelEvaluator):
             
         # Use CIFAR-10 directly to match fine-tuned model
         logger.info("Loading CIFAR-10 dataset for AlexNet evaluation...")
-        dataset = datasets.CIFAR10(root=LOCAL_CACHE_DIR, train=False, download=True, transform=transform)
+        dataset = datasets.CIFAR10(root=DATA_ROOT, train=False, download=True, transform=transform)
             
         # Create random subset
         subset_dataset = RandomSubsetDataset(dataset, sample_size=self.dataset_size)
@@ -741,7 +730,7 @@ class VGG16Evaluator(ModelEvaluator):
         
         # Use CIFAR-10 directly to match fine-tuned model
         logger.info("Loading CIFAR-10 dataset for VGG16 evaluation...")
-        dataset = datasets.CIFAR10(root=LOCAL_CACHE_DIR, train=False, download=True, transform=transform)
+        dataset = datasets.CIFAR10(root=DATA_ROOT, train=False, download=True, transform=transform)
         
         # Create random subset
         subset_dataset = RandomSubsetDataset(dataset, sample_size=self.dataset_size)
@@ -775,7 +764,7 @@ class SqueezeNetEvaluator(ModelEvaluator):
         # Try SVHN first (good for SqueezeNet)
         try:
             logger.info("Loading SVHN dataset for SqueezeNet...")
-            dataset = datasets.SVHN(root=LOCAL_CACHE_DIR, split='test', download=True, 
+            dataset = datasets.SVHN(root=DATA_ROOT, split='test', download=True, 
                                    transform=transform)
         except Exception as e:
             logger.warning(f"Error loading SVHN: {e}")
@@ -789,11 +778,11 @@ class SqueezeNetEvaluator(ModelEvaluator):
                     transforms.Lambda(lambda x: x.repeat(3, 1, 1)),  # Convert grayscale to RGB
                     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
                 ])
-                dataset = datasets.FashionMNIST(root=LOCAL_CACHE_DIR, train=False, download=True, transform=fashion_transform)
+                dataset = datasets.FashionMNIST(root=DATA_ROOT, train=False, download=True, transform=fashion_transform)
             except Exception as e:
                 logger.warning(f"Error loading FashionMNIST: {e}")
                 logger.warning("Falling back to CIFAR-10")
-                dataset = datasets.CIFAR10(root=LOCAL_CACHE_DIR, train=False, download=True, transform=transform)
+                dataset = datasets.CIFAR10(root=DATA_ROOT, train=False, download=True, transform=transform)
         
         # Create random subset
         subset_dataset = RandomSubsetDataset(dataset, sample_size=self.dataset_size)
@@ -863,8 +852,7 @@ def parse_args():
     parser.add_argument("--timeout", type=int, default=60,
                         help=f"Timeout for data loading operations in seconds (default: 60)")
     
-    parser.add_argument("--local-cache", type=str, default=LOCAL_CACHE_DIR,
-                        help=f"Local directory to cache datasets (default: {LOCAL_CACHE_DIR})")
+
     
     return parser.parse_args()
 
@@ -876,10 +864,7 @@ def main():
     # Configure output directory
     os.makedirs(args.output_dir, exist_ok=True)
     
-    # Update global cache dir if specified
-    global LOCAL_CACHE_DIR
-    LOCAL_CACHE_DIR = args.local_cache
-    os.makedirs(LOCAL_CACHE_DIR, exist_ok=True)
+
     
     # Log system information
     logger.info(f"Device: {DEVICE}")
@@ -889,7 +874,6 @@ def main():
     
     logger.info(f"Using dataset size: {args.dataset_size}")
     logger.info(f"Using image size: {args.image_size}")
-    logger.info(f"Local cache directory: {LOCAL_CACHE_DIR}")
     
     # Run evaluations for all specified models
     all_results = {}
