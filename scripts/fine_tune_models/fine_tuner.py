@@ -54,11 +54,12 @@ class ModelFinetuner:
     """Base class for fine-tuning models."""
     
     def __init__(self, model_name, batch_size=DEFAULT_BATCH_SIZE, 
-                 num_epochs=DEFAULT_NUM_EPOCHS, learning_rate=DEFAULT_LR):
+                 num_epochs=DEFAULT_NUM_EPOCHS, learning_rate=DEFAULT_LR, num_workers=4):
         self.model_name = model_name
         self.batch_size = batch_size
         self.num_epochs = num_epochs
         self.learning_rate = learning_rate
+        self.num_workers = num_workers
         self.device = DEVICE
         
         # Create data loaders first to get num_classes
@@ -285,8 +286,9 @@ class MobileNetV2Finetuner(ModelFinetuner):
         train_dataset = datasets.CIFAR10(root=DATA_ROOT, train=True, download=True, transform=transform_train)
         val_dataset = datasets.CIFAR10(root=DATA_ROOT, train=False, download=True, transform=transform_val)
         
-        train_loader = DataLoader(train_dataset, batch_size=self.batch_size, shuffle=True, num_workers=4)
-        val_loader = DataLoader(val_dataset, batch_size=self.batch_size, shuffle=False, num_workers=4)
+        train_loader = DataLoader(train_dataset, batch_size=self.batch_size, shuffle=True, num_workers=self.num_workers)
+        val_loader = DataLoader(val_dataset, batch_size=self.batch_size, shuffle=False, num_workers=self.num_workers)
+
         
         return train_loader, val_loader
     
@@ -350,15 +352,16 @@ class InceptionFinetuner(ModelFinetuner):
         try:
             logger.info("Loading STL10 dataset for Inception...")
             train_dataset = datasets.STL10(root=DATA_ROOT, split='train', download=True, transform=transform_train)
-            test_dataset = datasets.STL10(root=DATA_ROOT, split='test', download=True, transform=transform_val)
+            val_dataset = datasets.STL10(root=DATA_ROOT, split='test', download=True, transform=transform_val)
         except Exception as e:
             logger.warning(f"Error loading STL10: {e}")
             logger.warning("Falling back to CIFAR-10")
             train_dataset = datasets.CIFAR10(root=DATA_ROOT, train=True, download=True, transform=transform_train)
-            test_dataset = datasets.CIFAR10(root=DATA_ROOT, train=False, download=True, transform=transform_val)
+            val_dataset = datasets.CIFAR10(root=DATA_ROOT, train=False, download=True, transform=transform_val)
         
-        train_loader = DataLoader(train_dataset, batch_size=self.batch_size, shuffle=True, num_workers=4)
-        val_loader = DataLoader(test_dataset, batch_size=self.batch_size, shuffle=False, num_workers=4)
+            train_loader = DataLoader(train_dataset, batch_size=self.batch_size, shuffle=True, num_workers=self.num_workers)
+            val_loader = DataLoader(val_dataset, batch_size=self.batch_size, shuffle=False, num_workers=self.num_workers)
+
         
         return train_loader, val_loader
     
@@ -411,8 +414,9 @@ class ResNet18Finetuner(ModelFinetuner):
         train_dataset = datasets.CIFAR10(root=DATA_ROOT, train=True, download=True, transform=transform_train)
         val_dataset = datasets.CIFAR10(root=DATA_ROOT, train=False, download=True, transform=transform_val)
         
-        train_loader = DataLoader(train_dataset, batch_size=self.batch_size, shuffle=True, num_workers=4)
-        val_loader = DataLoader(val_dataset, batch_size=self.batch_size, shuffle=False, num_workers=4)
+        train_loader = DataLoader(train_dataset, batch_size=self.batch_size, shuffle=True, num_workers=self.num_workers)
+        val_loader = DataLoader(val_dataset, batch_size=self.batch_size, shuffle=False, num_workers=self.num_workers)
+
         
         return train_loader, val_loader
     
@@ -465,8 +469,9 @@ class AlexNetFinetuner(ModelFinetuner):
         train_dataset = datasets.CIFAR10(root=DATA_ROOT, train=True, download=True, transform=transform_train)
         val_dataset = datasets.CIFAR10(root=DATA_ROOT, train=False, download=True, transform=transform_val)
         
-        train_loader = DataLoader(train_dataset, batch_size=self.batch_size, shuffle=True, num_workers=4)
-        val_loader = DataLoader(val_dataset, batch_size=self.batch_size, shuffle=False, num_workers=4)
+        train_loader = DataLoader(train_dataset, batch_size=self.batch_size, shuffle=True, num_workers=self.num_workers)
+        val_loader = DataLoader(val_dataset, batch_size=self.batch_size, shuffle=False, num_workers=self.num_workers)
+
         
         return train_loader, val_loader
     
@@ -524,8 +529,9 @@ class VGG16Finetuner(ModelFinetuner):
         train_dataset = datasets.CIFAR10(root=DATA_ROOT, train=True, download=True, transform=transform_train)
         val_dataset = datasets.CIFAR10(root=DATA_ROOT, train=False, download=True, transform=transform_val)
         
-        train_loader = DataLoader(train_dataset, batch_size=self.batch_size, shuffle=True, num_workers=4)
-        val_loader = DataLoader(val_dataset, batch_size=self.batch_size, shuffle=False, num_workers=4)
+        train_loader = DataLoader(train_dataset, batch_size=self.batch_size, shuffle=True, num_workers=self.num_workers)
+        val_loader = DataLoader(val_dataset, batch_size=self.batch_size, shuffle=False, num_workers=self.num_workers)
+
         
         return train_loader, val_loader
     
@@ -586,8 +592,9 @@ class SqueezeNetFinetuner(ModelFinetuner):
         train_dataset = datasets.CIFAR10(root=DATA_ROOT, train=True, download=True, transform=transform_train)
         val_dataset = datasets.CIFAR10(root=DATA_ROOT, train=False, download=True, transform=transform_val)
         
-        train_loader = DataLoader(train_dataset, batch_size=self.batch_size, shuffle=True, num_workers=4)
-        val_loader = DataLoader(val_dataset, batch_size=self.batch_size, shuffle=False, num_workers=4)
+        train_loader = DataLoader(train_dataset, batch_size=self.batch_size, shuffle=True, num_workers=self.num_workers)
+        val_loader = DataLoader(val_dataset, batch_size=self.batch_size, shuffle=False, num_workers=self.num_workers)
+
         
         return train_loader, val_loader
         
@@ -640,6 +647,9 @@ def parse_args():
     parser.add_argument("--learning-rate", type=float, default=DEFAULT_LR,
                         help=f"Learning rate (default: {DEFAULT_LR})")
     
+    parser.add_argument("--num-workers", type=int, default=4,
+                    help="Number of workers for data loading (default: 4)")
+
     return parser.parse_args()
 
 
@@ -666,7 +676,8 @@ def main():
                 model_name=model_name,
                 batch_size=args.batch_size,
                 num_epochs=args.epochs,
-                learning_rate=args.learning_rate
+                learning_rate=args.learning_rate,
+                num_workers=args.num_workers
             )
             
             # Train the model
