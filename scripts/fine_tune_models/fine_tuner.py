@@ -353,6 +353,10 @@ class InceptionFinetuner(ModelFinetuner):
             logger.info("Loading STL10 dataset for Inception...")
             train_dataset = datasets.STL10(root=DATA_ROOT, split='train', download=True, transform=transform_train)
             val_dataset = datasets.STL10(root=DATA_ROOT, split='test', download=True, transform=transform_val)
+
+            train_loader = DataLoader(train_dataset, batch_size=self.batch_size, shuffle=True, num_workers=self.num_workers)
+            val_loader = DataLoader(val_dataset, batch_size=self.batch_size, shuffle=False, num_workers=self.num_workers)
+
         except Exception as e:
             logger.warning(f"Error loading STL10: {e}")
             logger.warning("Falling back to CIFAR-10")
