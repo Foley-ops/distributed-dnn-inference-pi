@@ -339,8 +339,13 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
                 for i, (images, labels) in enumerate(test_loader):
                     if i == num_batches:
                         break
+                        
                     logger.info(f"Running inference on batch {i+1}/{num_batches} with shape: {images.shape}")
+                    batch_start_time = time.time()
                     output = model(images)
+                    batch_total_time = time.time() - batch_start_time
+                    logger.info(f"End to end time for batch {i}: {batch_total_time}")
+
                     logger.info(f"Received output shape: {output.shape}")
 
                     # log the predicted vs actual labels
