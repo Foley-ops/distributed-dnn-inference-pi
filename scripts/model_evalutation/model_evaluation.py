@@ -689,31 +689,11 @@ class SqueezeNetEvaluator(ModelEvaluator):
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ])
         
-        # Try SVHN first (good for SqueezeNet)
-        try:
-            logger.info("Loading SVHN dataset for SqueezeNet...")
-            dataset = datasets.SVHN(root=DATA_ROOT, split='test', download=True, 
-                                   transform=transform)
-        except Exception as e:
-            logger.warning(f"Error loading SVHN: {e}")
-            # FashionMNIST is also good for SqueezeNet (simple features)
-            try:
-                logger.info("Trying FashionMNIST...")
-                fashion_transform = transforms.Compose([
-                    transforms.Resize(224),
-                    transforms.CenterCrop(224),
-                    transforms.ToTensor(),
-                    transforms.Lambda(lambda x: x.repeat(3, 1, 1)),  # Convert grayscale to RGB
-                    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-                ])
-                dataset = datasets.FashionMNIST(root=DATA_ROOT, train=False, download=True, transform=fashion_transform)
-            except Exception as e:
-                logger.warning(f"Error loading FashionMNIST: {e}")
-                logger.warning("Falling back to CIFAR-10")
-                dataset = datasets.CIFAR10(root=DATA_ROOT, train=False, download=True, transform=transform)
+        logger.info("Loading CIFAR-10 dataset for SqueezeNet evaluation...")
+        dataset = datasets.CIFAR10(root=DATA_ROOT, train=False, download=True, transform=transform)
         
         return DataLoader(dataset, batch_size=self.batch_size, shuffle=True, 
-                          num_workers=self.num_workers, pin_memory=True)
+                        num_workers=self.num_workers, pin_memory=True)
 
 
 #############################################
