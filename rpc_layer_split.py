@@ -89,6 +89,7 @@ class MobileNetV2Shard1(ModelShardBase):
 
         # temporary CPU usge percent collection 
         cpu_percent = psutil.cpu_percent(0.1)
+        cpu_percent = psutil.cpu_percent(0.1)
         logging.info(f"CPU Usage Percentage (%): {cpu_percent}")
 
         worker_inference_total_time = time.time() - worker_inference_start_time # calculate time spent on inference 
@@ -145,6 +146,7 @@ class MobileNetV2Shard2(ModelShardBase):
         logging.info(f"Memory Used GB: {memory_used_gb}")
 
         # temporary CPU usge percent collection 
+        cpu_percent = psutil.cpu_percent(0.1)
         cpu_percent = psutil.cpu_percent(0.1)
         logging.info(f"CPU Usage Percentage (%): {cpu_percent}")
 
