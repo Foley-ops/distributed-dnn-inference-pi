@@ -75,7 +75,20 @@ class MobileNetV2Shard1(ModelShardBase):
         x = x_rref.to_here().to(self.device)
 
         worker_inference_start_time = time.time() # record start time
-        output = self.features_first_half(x)
+
+        output = self.features_first_half(x) # inference 
+
+        # temporary memory stats collection 
+        memory = psutil.virtual_memory()
+        memory_used_gb = round((memory.total - memory.available) / (1024**3), 2)
+        memory_percent = memory.percent
+        logging.info(f"Memory Usage Percent: {memory_percent}Memory Used GB: {}")
+        logging.info(f"Memory Used GB: {}")
+
+        # temporary CPU usge percent collection 
+        cpu_percent = psutil.cpu_percent(0.1)
+        logging.info(f"CPU Usage Percentage (%): {cpu_percent}")
+
         worker_inference_total_time = time.time() - worker_inference_start_time # calculate time spent on inference 
         logging.info(f"Time spent on inference: {worker_inference_total_time}")
 
@@ -121,6 +134,18 @@ class MobileNetV2Shard2(ModelShardBase):
         x = nn.functional.adaptive_avg_pool2d(x, (1, 1))
         x = torch.flatten(x, 1)
         x = self.classifier(x)
+
+        # temporary memory stats collection 
+        memory = psutil.virtual_memory()
+        memory_used_gb = round((memory.total - memory.available) / (1024**3), 2)
+        memory_percent = memory.percent
+        logging.info(f"Memory Usage Percent: {memory_percent}Memory Used GB: {}")
+        logging.info(f"Memory Used GB: {}")
+
+        # temporary CPU usge percent collection 
+        cpu_percent = psutil.cpu_percent(0.1)
+        logging.info(f"CPU Usage Percentage (%): {cpu_percent}")
+
         worker_inference_total_time = time.time() - worker_inference_start_time # calculate time spent on inference 
         logging.info(f"Time spent on inference: {worker_inference_total_time}")
 
