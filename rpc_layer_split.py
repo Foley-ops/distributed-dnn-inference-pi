@@ -77,7 +77,7 @@ class MobileNetV2Shard1(ModelShardBase):
         x = x_rref.to_here().to(self.device)
 
         worker_inference_start_time = time.time() # record start time
-        cpu_percent = psutil.cpu_percent(0.1)
+        cpu_percent = psutil.cpu_percent()
 
         output = self.features_first_half(x) # inference 
         
@@ -89,7 +89,7 @@ class MobileNetV2Shard1(ModelShardBase):
         logging.info(f"Memory Used GB: {memory_used_gb}")
 
         # temporary CPU usge percent collection 
-        cpu_percent = psutil.cpu_percent(0.1)
+        cpu_percent = psutil.cpu_percent()
         logging.info(f"CPU Usage Percentage (%): {cpu_percent}")
 
         worker_inference_total_time = time.time() - worker_inference_start_time # calculate time spent on inference 
@@ -133,7 +133,7 @@ class MobileNetV2Shard2(ModelShardBase):
         x = x_rref.to_here().to(self.device)
 
         worker_inference_start_time = time.time() # record start time
-        cpu_percent = psutil.cpu_percent(0.1)
+        cpu_percent = psutil.cpu_percent()
 
         x = self.features_second_half(x)
         x = nn.functional.adaptive_avg_pool2d(x, (1, 1))
@@ -148,7 +148,7 @@ class MobileNetV2Shard2(ModelShardBase):
         logging.info(f"Memory Used GB: {memory_used_gb}")
 
         # temporary CPU usge percent collection 
-        cpu_percent = psutil.cpu_percent(0.1)
+        cpu_percent = psutil.cpu_percent()
         logging.info(f"CPU Usage Percentage (%): {cpu_percent}")
 
         worker_inference_total_time = time.time() - worker_inference_start_time # calculate time spent on inference 
@@ -339,7 +339,7 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
                 for i, (images, labels) in enumerate(test_loader):
                     if i == num_batches:
                         break
-                        
+
                     logger.info(f"Running inference on batch {i+1}/{num_batches} with shape: {images.shape}")
                     batch_start_time = time.time()
                     output = model(images)
