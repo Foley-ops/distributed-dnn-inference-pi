@@ -43,22 +43,32 @@ class ModelShardBase(nn.Module):
             param_rrefs.append(RRef(param))
         return param_rrefs
 
-# First half of MobileNetV2
-class MobileNetV2Shard1(ModelShardBase):
-    def __init__(self, device, num_classes=10):
-        super(MobileNetV2Shard1, self).__init__(device)
+# First half of model
+class Shard1(ModelShardBase):
+    def __init__(self, device, model, num_classes=10):
+        super(Shard1, self).__init__(device)
         
-        # Use torchvision's MobileNetV2
-        # complete_model = torchvision_models.mobilenet_v2(num_classes=num_classes)
-        # complete_model = torchvision_models.mobilenet_v2(pretrained=True)
-        complete_model = torchvision_models.mobilenet_v2(weights=None)  
+        # load model 
+        # TODO: make num_classes vs the chosen dataset vs the loaded weights file checking more robust 
+        # for now, the models finetuned on cifar will need num_classes=10
+        if (model == "mobilenetv2"):
+            complete_model = torchvision_models.mobilenet_v2(weights=None)  
+            state_dict = torch.load("mobilenetv2_cifar10.pth", map_location=torch.device(device)) 
 
-        # load the saved state dictionary, ensuring it is mapped to the correct device
-        state_dict = torch.load("mobilenetv2_cifar10.pth", map_location=torch.device(device)) # model path is hard coded for now 
+            # adjust number of output classes if needed 
+            if num_classes != 1000: 
+                complete_model.classifier[1] = nn.Linear(complete_model.last_channel, num_classes)
 
-        # adjust number of output classes if needed 
-        if num_classes != 1000: 
-            complete_model.classifier[1] = nn.Linear(complete_model.last_channel, num_classes)
+        elif (model == "inceptionv3"):
+            complete_model = torchvision_models.inceptionv3(weights=None) 
+            state_dict = torch.load("inception_cifar10.pth", map_location=torch.device(device)) 
+
+            # adjust number of output classes if needed 
+            if num_classes != 1000: 
+                complete_model.fc = nn.Linear(model.fc.in_features, num_classes)
+
+        else:
+            logger.error("model name not recognized")
 
         # load the saved weights into complete_model    
         complete_model.load_state_dict(state_dict)
@@ -72,7 +82,7 @@ class MobileNetV2Shard1(ModelShardBase):
         self.features_first_half.to(self.device)
     
     def forward(self, x_rref):
-        logging.info(f"MobileNetV2Shard1: Received input tensor with shape {x_rref.to_here().shape}")
+        logging.info(f"Shard1: Received input tensor with shape {x_rref.to_here().shape}")
 
         x = x_rref.to_here().to(self.device)
 
@@ -99,19 +109,32 @@ class MobileNetV2Shard1(ModelShardBase):
         # Return to CPU for RPC transfer
         return output.cpu()
 
-# Second half of MobileNetV2
-class MobileNetV2Shard2(ModelShardBase):
-    def __init__(self, device, num_classes=10):
-        super(MobileNetV2Shard2, self).__init__(device)
+# Second half of model
+class Shard2(ModelShardBase):
+    def __init__(self, device, model, num_classes=10):
+        super(Shard2, self).__init__(device)
         
-        # Use torchvision's MobileNetV2
-        # complete_model = torchvision_models.mobilenet_v2(num_classes=num_classes)
-        complete_model = torchvision_models.mobilenet_v2(weights=None)
-        state_dict = torch.load("mobilenetv2_cifar10.pth", map_location=torch.device(device))
+        # load model 
+        # TODO: make num_classes vs the chosen dataset vs the loaded weights file checking more robust 
+        # for now, the models finetuned on cifar will need num_classes=10
+        if (model == "mobilenetv2"):
+            complete_model = torchvision_models.mobilenet_v2(weights=None)  
+            state_dict = torch.load("mobilenetv2_cifar10.pth", map_location=torch.device(device)) 
 
-        # adjust number of output classes if needed 
-        if num_classes != 1000: 
-            complete_model.classifier[1] = nn.Linear(complete_model.last_channel, num_classes)
+            # adjust number of output classes if needed 
+            if num_classes != 1000: 
+                complete_model.classifier[1] = nn.Linear(complete_model.last_channel, num_classes)
+
+        elif (model == "inceptionv3"):
+            complete_model = torchvision_models.inceptionv3(weights=None) 
+            state_dict = torch.load("inception_cifar10.pth", map_location=torch.device(device)) 
+
+            # adjust number of output classes if needed 
+            if num_classes != 1000: 
+                model.fc = nn.Linear(model.fc.in_features, num_classes)
+
+        else:
+            logger.error("model name not recognized")
 
         # load the saved weights into complete_model
         complete_model.load_state_dict(state_dict)
@@ -128,7 +151,7 @@ class MobileNetV2Shard2(ModelShardBase):
         self.classifier.to(self.device)
     
     def forward(self, x_rref):
-        logging.info(f"MobileNetV2Shard2: Received input tensor with shape {x_rref.to_here().shape}")
+        logging.info(f"Shard2: Received input tensor with shape {x_rref.to_here().shape}")
 
         x = x_rref.to_here().to(self.device)
 
@@ -154,69 +177,108 @@ class MobileNetV2Shard2(ModelShardBase):
         worker_inference_total_time = time.time() - worker_inference_start_time # calculate time spent on inference 
         logging.info(f"Time spent on inference: {worker_inference_total_time}")
 
-        logging.info(f"MobileNetV2Shard2: Produced output tensor with shape {x.shape}")
+        logging.info(f"Shard2: Produced output tensor with shape {x.shape}")
         # Return to CPU for RPC transfer
         return x.cpu()
+
+# split model into desired number of partitions
+def split_model_into_n_shards(model: nn.Module, n: int) -> List[nn.Sequential]:
+    """
+    Split a model into `n` sequential shards.
+
+    Args:
+        model (nn.Module): The complete PyTorch model.
+        n (int): Number of desired shards.
+
+    Returns:
+        List[nn.Sequential]: List of model shards.
+    """
+    # Flatten model into a list of layers
+    layers = []
+    for module in model.children():
+        if isinstance(module, nn.Sequential):
+            layers.extend(module.children())
+        else:
+            layers.append(module)
+
+    total = len(layers)
+    if total < n:
+        raise ValueError(f"Cannot split model with {total} layers into {n} shards.")
+
+    shard_size = total // n
+    shards = []
+    for i in range(n):
+        start = i * shard_size
+        end = (i + 1) * shard_size if i < n - 1 else total
+        shards.append(nn.Sequential(*layers[start:end]))
+
+    return shards
+
+class ShardWrapper(nn.Module):
+    def __init__(self, submodule):
+        super().__init__()
+        self.module = submodule.to("cpu")
+
+    def forward(self, x_rref):
+        x = x_rref.to_here().to("cpu")
+        return self.module(x).cpu()
+
+    def parameter_rrefs(self):
+        return [RRef(p) for p in self.parameters()]
 
 # Distributed model using pipeline parallelism
 class DistributedModel(nn.Module):
     def __init__(self, model_type: str, num_splits: int, workers: List[str], num_classes: int = 10):
         super(DistributedModel, self).__init__()
-        self.model_type = model_type
         self.num_splits = num_splits
-        
-        # Map model_type to appropriate shard classes
-        shard_classes = {
-            'mobilenetv2': (MobileNetV2Shard1, MobileNetV2Shard2),
-            # Other models can be added here
-        }
-        
-        if model_type not in shard_classes:
+        self.model_type = model_type
+        self.workers = workers
+        self.num_classes = num_classes
+        self.worker_rrefs = []
+
+        # Load and prepare model
+        if model_type == "mobilenetv2":
+            model = torchvision_models.mobilenet_v2(weights=None)
+            model.classifier[1] = nn.Linear(model.last_channel, num_classes)
+            model.load_state_dict(torch.load("mobilenetv2_cifar10.pth", map_location="cpu"))
+
+        elif model_type == "inceptionv3":
+            model = torchvision_models.inception_v3(weights=None, aux_logits=False)
+            model.fc = nn.Linear(model.fc.in_features, num_classes)
+            model.load_state_dict(torch.load("inception_cifar10.pth", map_location="cpu"))
+
+        else:
             raise ValueError(f"Unsupported model type: {model_type}")
-        
-        Shard1, Shard2 = shard_classes[model_type]
-        
-        # Put the first part of the model on workers[0]
-        self.p1_rref = rpc.remote(
-            workers[0],
-            Shard1,
-            args=("cpu", num_classes)
-        )
-        
-        # Put the second part of the model on workers[1]
-        self.p2_rref = rpc.remote(
-            workers[1],
-            Shard2,
-            args=("cpu", num_classes)
-        )
+
+        model.eval()
+
+        # Split and deploy to workers
+        self.shards = split_model_into_n_shards(model, num_splits)
+
+        for i, shard in enumerate(self.shards):
+            worker_name = self.workers[i % len(self.workers)]  # round robin if num_splits > len(workers)
+            rref = rpc.remote(worker_name, ShardWrapper, args=(shard,))
+            self.worker_rrefs.append(rref)
     
-    def forward(self, xs):
-        # Pipeline parallelism implementation
-        out_futures = []
+    def forward(self, x):
+        # Wrap the input tensor in a Remote Reference
+        x_rref = RRef(x)
+
+        # Sequentially pass the input through each shard on its respective worker
+        for i, shard_rref in enumerate(self.worker_rrefs):
+            logging.info(f"Sending tensor to shard {i} on worker {self.workers[i % len(self.workers)]}")
+            x_rref = shard_rref.rpc_sync().forward(x_rref)
+
+        # Retrieve the final output to the master node
+        return x_rref.to_here()
         
-        # Split input batch into micro-batches
-        for i, x in enumerate(iter(xs.split(self.num_splits, dim=0))):
-            logging.info(f"Processing micro-batch {i+1}/{self.num_splits}")
-            # Create RRef for the input data
-            x_rref = RRef(x)
-            
-            # Forward through first shard
-            y_rref = self.p1_rref.remote().forward(x_rref)
-            
-            # Forward through second shard (asynchronously)
-            z_fut = self.p2_rref.rpc_async().forward(y_rref)
-            out_futures.append(z_fut)
-        
-        # Collect and concatenate all outputs
-        return torch.cat(torch.futures.wait_all(out_futures))
-    
     def parameter_rrefs(self):
         remote_params = []
-        remote_params.extend(self.p1_rref.remote().parameter_rrefs().to_here())
-        remote_params.extend(self.p2_rref.remote().parameter_rrefs().to_here())
+        for rref in self.worker_rrefs:
+            remote_params.extend(rref.remote().parameter_rrefs().to_here())
         return remote_params
 
-def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, num_classes, dataset, num_batches):
+def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, num_classes, dataset, num_batches, model, num_splits):
     """
     Main function to run distributed inference
     """
@@ -352,14 +414,13 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
                     _, predicted = torch.max(output.data, 1)
                     logger.info(f"Predicted: {predicted[:5]} | Actual: {labels[:5]}")
 
-                    if (predicted[:5] == labels[:5]):
-                        num_correct += len(images) 
+                    num_correct += (predicted == labels).sum().item()
 
                     total_images += len(images)
 
             elapsed_time = time.time() - start_time
             logger.info(f"Inference completed on {total_images} images.")
-            logger.info(f"Final Accuracy: {1.0 * num_correct / total_images * 100.0}") # only works with batch_size=1 for now
+            logger.info(f"Final Accuracy: {1.0 * num_correct / total_images * 100.0}") 
             
             logger.info(f"Inference completed in {elapsed_time:.4f} seconds")
             
@@ -445,7 +506,7 @@ def main():
     parser.add_argument("--rank", type=int, default=0, help="Rank of current process")
     parser.add_argument("--world-size", type=int, default=3, help="World size (1 master + N workers)")
     parser.add_argument("--model", type=str, default="mobilenetv2", 
-                        choices=["mobilenetv2"],
+                        choices=["mobilenetv2", "inceptionv3"],
                         help="Model architecture")
     parser.add_argument("--batch-size", type=int, default=8, help="Batch size")
     parser.add_argument("--micro-batches", type=int, default=2, help="Number of micro-batches for pipeline")
@@ -454,6 +515,8 @@ def main():
                         choices=["cifar10", "dummy"],
                         help="Dataset to use for inference")
     parser.add_argument("--num-batches", type=int, default=3, help="Number of batches to run during inference")
+    parser.add_argument("--num-partitions", type=int, default=2, help="Number of partitions to split the model into")
+
 
     
     args = parser.parse_args()
@@ -467,7 +530,9 @@ def main():
         num_micro_batches=args.micro_batches,
         num_classes=args.num_classes,
         dataset=args.dataset,
-        num_batches=args.num_batches
+        num_batches=args.num_batches,
+        model=args.model,
+        num_splits=args.num_partitions,
     )
 
 if __name__ == "__main__":
