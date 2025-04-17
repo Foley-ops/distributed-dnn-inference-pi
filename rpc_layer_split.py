@@ -28,6 +28,7 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s [%(hostname)s:rank%(rank)s]',
 )
 
+'''
 # Base class for model shards
 class ModelShardBase(nn.Module):
     def __init__(self, device):
@@ -181,6 +182,9 @@ class Shard2(ModelShardBase):
         # Return to CPU for RPC transfer
         return x.cpu()
 
+'''
+
+
 # split model into desired number of partitions
 def split_model_into_n_shards(model: nn.Module, n: int) -> List[nn.Sequential]:
     if isinstance(model, torchvision_models.MobileNetV2):
@@ -240,8 +244,13 @@ class ShardWrapper(nn.Module):
         if not isinstance(x, torch.Tensor):
             raise TypeError(f"Expected a torch.Tensor but got {type(x)}")
 
+        logging.info(f"[{socket.gethostname()}] Received tensor with shape: {x.shape}")
+
         x = x.to("cpu")
-        return self.module(x).cpu()
+        output = self.module(x).cpu()
+
+        logging.info(f"[{socket.gethostname()}] Output tensor shape: {output.shape}")
+        return output
 
     def parameter_rrefs(self):
         return [RRef(p) for p in self.parameters()]
