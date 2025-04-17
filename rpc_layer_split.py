@@ -290,7 +290,7 @@ class DistributedModel(nn.Module):
             x_rref = shard_rref.rpc_sync().forward(x_rref)
 
         # Retrieve the final output to the master node
-        return x_rref.to_here()
+        return x_rref
         
     def parameter_rrefs(self):
         remote_params = []
