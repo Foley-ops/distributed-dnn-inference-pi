@@ -219,9 +219,15 @@ class ShardWrapper(nn.Module):
         super().__init__()
         self.module = submodule.to("cpu")
 
-    def forward(self, x_rref):
-        x = x_rref.to_here().to("cpu")
+    def forward(self, x_or_rref):
+        if isinstance(x_or_rref, RRef):
+            x = x_or_rref.to_here()
+        else:
+            x = x_or_rref
+
+        x = x.to("cpu")
         return self.module(x).cpu()
+
 
     def parameter_rrefs(self):
         return [RRef(p) for p in self.parameters()]
