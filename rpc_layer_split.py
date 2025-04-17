@@ -384,7 +384,7 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
             # Create distributed model
             model = DistributedModel(
                 model_type=model_type,
-                num_splits=num_micro_batches,
+                num_splits=num_partitions,
                 workers=workers,
                 num_classes=num_classes
             )
