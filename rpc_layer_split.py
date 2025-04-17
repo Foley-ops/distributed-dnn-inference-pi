@@ -290,16 +290,17 @@ class DistributedModel(nn.Module):
             self.worker_rrefs.append(rref)
     
     def forward(self, x):
-        # Wrap the input tensor in a Remote Reference
         x_rref = x
-
-        # Sequentially pass the input through each shard on its respective worker
         for i, shard_rref in enumerate(self.worker_rrefs):
             logging.info(f"Sending tensor to shard {i} on worker {self.workers[i % len(self.workers)]}")
             x_rref = shard_rref.rpc_sync().forward(x_rref)
+            
+            # Stop passing to next shard if it's the last
+            if i == len(self.worker_rrefs) - 1:
+                break
 
-        # Retrieve the final output to the master node
-        return x_rref
+        return x_rref  # x_rref is now just a Tensor, not an RRef
+
         
     def parameter_rrefs(self):
         remote_params = []
