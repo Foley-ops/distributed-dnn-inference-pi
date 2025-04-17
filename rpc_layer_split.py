@@ -272,7 +272,7 @@ class DistributedModel(nn.Module):
             model.load_state_dict(torch.load("mobilenetv2_cifar10.pth", map_location="cpu"))
 
         elif model_type == "inceptionv3":
-            model = torchvision_models.inception_v3(weights=None, aux_logits=False)
+            model = torchvision_models.inception_v3(weights=None, aux_logits=True)
             model.fc = nn.Linear(model.fc.in_features, num_classes)
             model.load_state_dict(torch.load("inception_cifar10.pth", map_location="cpu"))
 
