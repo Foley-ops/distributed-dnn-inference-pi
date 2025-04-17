@@ -392,11 +392,13 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
             # Load data
             logger.info(f"Loading {dataset} dataset")
             if dataset == 'cifar10':
+                resize_dim = (299, 299) if model_type == "inceptionv3" else (224, 224)
                 transform = transforms.Compose([
+                    transforms.Resize(resize_dim),
                     transforms.ToTensor(),
-                    transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
-                    transforms.Resize((224, 224))
-                ])
+                    transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+])
+
                 
                 dataset_path = os.path.expanduser('~/datasets/cifar10')
                 logger.info(f"Loading CIFAR-10 from: {dataset_path}")
