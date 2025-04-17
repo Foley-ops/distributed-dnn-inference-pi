@@ -183,36 +183,53 @@ class Shard2(ModelShardBase):
 
 # split model into desired number of partitions
 def split_model_into_n_shards(model: nn.Module, n: int) -> List[nn.Sequential]:
-    """
-    Split a model into `n` sequential shards.
+    if isinstance(model, torchvision_models.MobileNetV2):
+        # Split MobileNetV2 features and append classifier in last shard
+        feature_layers = list(model.features.children())
+        num_feature_layers = len(feature_layers)
+        split_idx = num_feature_layers // (n - 1)
 
-    Args:
-        model (nn.Module): The complete PyTorch model.
-        n (int): Number of desired shards.
+        shards = []
+        for i in range(n - 1):
+            start = i * split_idx
+            end = (i + 1) * split_idx if i < n - 2 else num_feature_layers
+            shards.append(nn.Sequential(*feature_layers[start:end]))
 
-    Returns:
-        List[nn.Sequential]: List of model shards.
-    """
-    # Flatten model into a list of layers
-    layers = []
-    for module in model.children():
-        if isinstance(module, nn.Sequential):
-            layers.extend(module.children())
-        else:
-            layers.append(module)
+        # Final shard: avg pool + flatten + classifier
+        final_block = nn.Sequential(
+            nn.AdaptiveAvgPool2d((1, 1)),
+            nn.Flatten(),
+            *list(model.classifier.children())
+        )
+        shards.append(final_block)
+        return shards
 
-    total = len(layers)
-    if total < n:
-        raise ValueError(f"Cannot split model with {total} layers into {n} shards.")
+    elif isinstance(model, torchvision_models.Inception3):
+        # Grab all children before the fully connected layer
+        modules = list(model.children())
+        backbone = modules[:-1]  # Everything except the fc layer
 
-    shard_size = total // n
-    shards = []
-    for i in range(n):
-        start = i * shard_size
-        end = (i + 1) * shard_size if i < n - 1 else total
-        shards.append(nn.Sequential(*layers[start:end]))
+        num_backbone_blocks = len(backbone)
+        split_idx = num_backbone_blocks // (n - 1)
 
-    return shards
+        shards = []
+        for i in range(n - 1):
+            start = i * split_idx
+            end = (i + 1) * split_idx if i < n - 2 else num_backbone_blocks
+            shards.append(nn.Sequential(*backbone[start:end]))
+
+        # Final shard: flatten + fc
+        final_block = nn.Sequential(
+            nn.AdaptiveAvgPool2d((1, 1)),
+            nn.Flatten(),
+            model.fc
+        )
+        shards.append(final_block)
+        return shards
+
+    else:
+        raise ValueError("Unsupported model type for safe splitting")
+
 
 class ShardWrapper(nn.Module):
     def __init__(self, submodule):
