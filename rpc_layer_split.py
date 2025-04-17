@@ -219,21 +219,12 @@ class ShardWrapper(nn.Module):
         super().__init__()
         self.module = submodule.to("cpu")
 
-    def forward(self, x_or_rref):
-        # Safely extract tensor from RRef if needed
-        if isinstance(x_or_rref, RRef):
-            x = x_or_rref.to_here()
-        else:
-            x = x_or_rref
-
-        # Make sure we actually have a Tensor
+    def forward(self, x):  
         if not isinstance(x, torch.Tensor):
             raise TypeError(f"Expected a torch.Tensor but got {type(x)}")
 
-        print(f"[DEBUG] Received type in ShardWrapper: {type(x)}")
         x = x.to("cpu")
         return self.module(x).cpu()
-
 
     def parameter_rrefs(self):
         return [RRef(p) for p in self.parameters()]
@@ -274,7 +265,7 @@ class DistributedModel(nn.Module):
     
     def forward(self, x):
         # Wrap the input tensor in a Remote Reference
-        x_rref = RRef(x)
+        x_rref = x
 
         # Sequentially pass the input through each shard on its respective worker
         for i, shard_rref in enumerate(self.worker_rrefs):
