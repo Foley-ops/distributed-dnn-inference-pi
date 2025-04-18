@@ -290,7 +290,7 @@ class DistributedModel(nn.Module):
             model = models.squeezenet1_1(weights=None)  
             model.classifier[1] = nn.Conv2d(512, num_classes, kernel_size=(1, 1)) 
             model.num_classes = num_classes
-            model.load_state_dict(torch.load("squeezenet_cifar10.pth", map_location=torch.device(device))t)
+            model.load_state_dict(torch.load("squeezenet_cifar10.pth", map_location=torch.device(device)))
 
         elif model_type == "vgg16":
             model = models.vgg16(weights=None)  
