@@ -188,7 +188,7 @@ class Shard2(ModelShardBase):
 # split model into desired number of partitions
 def split_model_into_n_shards(model: nn.Module, n: int) -> List[nn.Sequential]:
     if isinstance(model, torchvision_models.MobileNetV2):
-        # Split MobileNetV2 features and append classifier in last shard
+        # MobileNetV2: split features, last shard does pool + flatten + classifier
         feature_layers = list(model.features.children())
         num_feature_layers = len(feature_layers)
         split_idx = num_feature_layers // (n - 1)
@@ -199,7 +199,6 @@ def split_model_into_n_shards(model: nn.Module, n: int) -> List[nn.Sequential]:
             end = (i + 1) * split_idx if i < n - 2 else num_feature_layers
             shards.append(nn.Sequential(*feature_layers[start:end]))
 
-        # Final shard: avg pool + flatten + classifier
         final_block = nn.Sequential(
             nn.AdaptiveAvgPool2d((1, 1)),
             nn.Flatten(),
@@ -209,20 +208,16 @@ def split_model_into_n_shards(model: nn.Module, n: int) -> List[nn.Sequential]:
         return shards
 
     elif isinstance(model, torchvision_models.Inception3):
-        # Grab all children before the fully connected layer
-        modules = list(model.children())
-        backbone = modules[:-1]  # Everything except the fc layer
-
-        num_backbone_blocks = len(backbone)
-        split_idx = num_backbone_blocks // (n - 1)
+        # InceptionV3: split all layers before final FC
+        modules = list(model.children())[:-1]  # exclude fc
+        split_idx = len(modules) // (n - 1)
 
         shards = []
         for i in range(n - 1):
             start = i * split_idx
-            end = (i + 1) * split_idx if i < n - 2 else num_backbone_blocks
-            shards.append(nn.Sequential(*backbone[start:end]))
+            end = (i + 1) * split_idx if i < n - 2 else len(modules)
+            shards.append(nn.Sequential(*modules[start:end]))
 
-        # Final shard: flatten + fc
         final_block = nn.Sequential(
             nn.AdaptiveAvgPool2d((1, 1)),
             nn.Flatten(),
@@ -231,8 +226,92 @@ def split_model_into_n_shards(model: nn.Module, n: int) -> List[nn.Sequential]:
         shards.append(final_block)
         return shards
 
+    elif isinstance(model, torchvision_models.ResNet):
+        # ResNet18: use layer1 to layer4 blocks, then avgpool + fc
+        body = nn.Sequential(
+            model.conv1,
+            model.bn1,
+            model.relu,
+            model.maxpool,
+            model.layer1,
+            model.layer2,
+            model.layer3,
+            model.layer4,
+        )
+        body_layers = list(body.children())
+        split_idx = len(body_layers) // (n - 1)
+
+        shards = []
+        for i in range(n - 1):
+            start = i * split_idx
+            end = (i + 1) * split_idx if i < n - 2 else len(body_layers)
+            shards.append(nn.Sequential(*body_layers[start:end]))
+
+        final_block = nn.Sequential(
+            model.avgpool,
+            nn.Flatten(),
+            model.fc
+        )
+        shards.append(final_block)
+        return shards
+
+    elif isinstance(model, torchvision_models.AlexNet):
+        # AlexNet: features → classifier
+        feature_layers = list(model.features.children())
+        split_idx = len(feature_layers) // (n - 1)
+
+        shards = []
+        for i in range(n - 1):
+            start = i * split_idx
+            end = (i + 1) * split_idx if i < n - 2 else len(feature_layers)
+            shards.append(nn.Sequential(*feature_layers[start:end]))
+
+        final_block = nn.Sequential(
+            nn.Flatten(),
+            *list(model.classifier.children())
+        )
+        shards.append(final_block)
+        return shards
+
+    elif isinstance(model, torchvision_models.SqueezeNet):
+        # SqueezeNet: features + classifier
+        feature_layers = list(model.features.children())
+        split_idx = len(feature_layers) // (n - 1)
+
+        shards = []
+        for i in range(n - 1):
+            start = i * split_idx
+            end = (i + 1) * split_idx if i < n - 2 else len(feature_layers)
+            shards.append(nn.Sequential(*feature_layers[start:end]))
+
+        final_block = nn.Sequential(
+            model.classifier,  # includes Dropout, Conv2d, ReLU, AvgPool
+            nn.Flatten()
+        )
+        shards.append(final_block)
+        return shards
+
+    elif isinstance(model, torchvision_models.VGG):
+        # VGG16: features → avgpool → classifier
+        feature_layers = list(model.features.children())
+        split_idx = len(feature_layers) // (n - 2)
+
+        shards = []
+        for i in range(n - 2):
+            start = i * split_idx
+            end = (i + 1) * split_idx if i < n - 3 else len(feature_layers)
+            shards.append(nn.Sequential(*feature_layers[start:end]))
+
+        # Final 2 shards: avgpool + flatten, then classifier
+        shards.append(nn.Sequential(
+            model.avgpool,
+            nn.Flatten()
+        ))
+        shards.append(model.classifier)
+        return shards
+
     else:
-        raise ValueError("Unsupported model type for safe splitting")
+        raise ValueError(f"Unsupported model type: {type(model)}")
 
 
 class ShardWrapper(nn.Module):
