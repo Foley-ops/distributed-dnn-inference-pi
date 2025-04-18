@@ -1,5 +1,5 @@
 .env
 __pycache__
 
-alexnet_cifar10.pth
-vgg16_cifar10.pth
+alexnet_cifar10*.pth
+vgg16_cifar10*.pth

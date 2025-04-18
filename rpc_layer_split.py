@@ -279,7 +279,24 @@ class DistributedModel(nn.Module):
         elif model_type == "alexnet":
             model = models.alexnet(weights=None) 
             model.classifier[6] = nn.Linear(model.classifier[6].in_features, num_classes)  
-            model.load_state_dict(torch.load("alexnet_cifar10.pth", map_location=torch.device(device)))
+            model.load_state_dict(torch.load("alexnet_cifar10_25epochs.pth", map_location=torch.device(device)))
+
+        elif model_type == "resnet18":
+            model = models.resnet18(weights=None)  
+            model.fc = nn.Linear(model.fc.in_features, num_classes) 
+            model.load_state_dict(torch.load("resnet18_cifar10.pth", map_location=torch.device(device)))
+
+        elif model_type == "squeezenet":
+            model = models.squeezenet1_1(weights=None)  
+            model.classifier[1] = nn.Conv2d(512, num_classes, kernel_size=(1, 1)) 
+            model.num_classes = num_classes
+            model.load_state_dict(torch.load("squeezenet_cifar10.pth", map_location=torch.device(device))t)
+
+        elif model_type == "vgg16":
+            model = models.vgg16(weights=None)  
+            model.classifier[6] = nn.Linear(model.classifier[6].in_features, num_classes)  
+            state_dict = torch.load("vgg16_cifar10_25epochs.pth", map_location=torch.device(device))
+            model.load_state_dict(state_dict)
 
         else:
             raise ValueError(f"Unsupported model type: {model_type}")
