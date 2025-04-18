@@ -276,6 +276,11 @@ class DistributedModel(nn.Module):
             model.fc = nn.Linear(model.fc.in_features, num_classes)
             model.load_state_dict(torch.load("inception_cifar10.pth", map_location="cpu"))
 
+        elif model_type == "alexnet":
+            model = models.alexnet(weights=None) 
+            model.classifier[6] = nn.Linear(model.classifier[6].in_features, num_classes)  
+            model.load_state_dict(torch.load("alexnet_cifar10.pth", map_location=torch.device(device)))
+
         else:
             raise ValueError(f"Unsupported model type: {model_type}")
 
@@ -538,7 +543,7 @@ def main():
     parser.add_argument("--rank", type=int, default=0, help="Rank of current process")
     parser.add_argument("--world-size", type=int, default=3, help="World size (1 master + N workers)")
     parser.add_argument("--model", type=str, default="mobilenetv2", 
-                        choices=["mobilenetv2", "inceptionv3"],
+                        choices=["mobilenetv2", "inceptionv3", "alexnet", "resnet18", "squeezenet", "vgg16"],
                         help="Model architecture")
     parser.add_argument("--batch-size", type=int, default=8, help="Batch size")
     parser.add_argument("--micro-batches", type=int, default=2, help="Number of micro-batches for pipeline")
