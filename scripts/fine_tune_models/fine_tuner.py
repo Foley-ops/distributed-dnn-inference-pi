@@ -346,16 +346,10 @@ class InceptionFinetuner(ModelFinetuner):
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ])
         
-        # Try STL10 first (higher resolution), fall back to CIFAR-10
-        try:
-            logger.info("Loading STL10 dataset for Inception...")
-            train_dataset = datasets.STL10(root=DATA_ROOT, split='train', download=True, transform=transform_train)
-            test_dataset = datasets.STL10(root=DATA_ROOT, split='test', download=True, transform=transform_val)
-        except Exception as e:
-            logger.warning(f"Error loading STL10: {e}")
-            logger.warning("Falling back to CIFAR-10")
-            train_dataset = datasets.CIFAR10(root=DATA_ROOT, train=True, download=True, transform=transform_train)
-            test_dataset = datasets.CIFAR10(root=DATA_ROOT, train=False, download=True, transform=transform_val)
+        # Use CIFAR-10 for consistency with other models
+        logger.info("Loading CIFAR-10 dataset for Inception...")
+        train_dataset = datasets.CIFAR10(root=DATA_ROOT, train=True, download=True, transform=transform_train)
+        test_dataset = datasets.CIFAR10(root=DATA_ROOT, train=False, download=True, transform=transform_val)
         
         train_loader = DataLoader(train_dataset, batch_size=self.batch_size, shuffle=True, num_workers=4)
         val_loader = DataLoader(test_dataset, batch_size=self.batch_size, shuffle=False, num_workers=4)
