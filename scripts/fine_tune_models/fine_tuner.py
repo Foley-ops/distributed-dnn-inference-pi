@@ -556,7 +556,13 @@ class SqueezeNetFinetuner(ModelFinetuner):
     
     def _adapt_model(self, model, num_classes):
         logger.info(f"Adapting SqueezeNet to {num_classes} classes")
-        model.classifier[1] = nn.Conv2d(512, num_classes, kernel_size=(1,1), stride=(1,1))
+        # Replace the entire classifier for SqueezeNet
+        model.classifier = nn.Sequential(
+            nn.Dropout(p=0.5),
+            nn.Conv2d(512, num_classes, kernel_size=1),
+            nn.ReLU(inplace=True),
+            nn.AdaptiveAvgPool2d((1, 1))
+        )
         return model
     
     def _create_data_loaders(self):
