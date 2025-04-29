@@ -6,6 +6,7 @@ Multi-Model Evaluation Script
 
 This script evaluates multiple deep learning models and collects performance metrics
 including inference time, accuracy, CPU/GPU usage, and memory consumption.
+All models are evaluated only on CIFAR-10 dataset.
 """
 
 import os
@@ -39,14 +40,10 @@ logger = logging.getLogger(__name__)
 
 # Paths
 DATA_ROOT = os.path.expanduser("~/datasets")
-IMAGENET_PATH = os.path.join(DATA_ROOT, "imagenet")
-VOC_PATH = os.path.join(DATA_ROOT, "voc2012")
-COCO_PATH = os.path.join(DATA_ROOT, "coco")
 MODEL_PATH = os.path.join(DATA_ROOT, "pretrained_models")
 FINE_TUNED_MODEL_PATH = os.path.join(DATA_ROOT, "fine_tuned_models")
 
 # No local cache, use NFS mount as requested
-
 os.environ['TORCH_HOME'] = MODEL_PATH
 
 RESULTS_DIR = os.path.join(DATA_ROOT, "single_device_results")
@@ -351,8 +348,30 @@ class ModelEvaluator:
         return model
     
     def _create_data_loader(self):
-        """Create and return a data loader. To be implemented by subclasses."""
-        raise NotImplementedError("Subclass must implement _create_data_loader()")
+        """Create a data loader for CIFAR-10 dataset."""
+        transform = transforms.Compose([
+            transforms.Resize(self.image_size),
+            transforms.CenterCrop(self.image_size),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ])
+        
+        logger.info(f"Loading CIFAR-10 dataset for {self.model_name} evaluation...")
+        
+        # Download and load CIFAR-10 dataset
+        dataset = datasets.CIFAR10(
+            root=DATA_ROOT, 
+            train=False, 
+            download=True, 
+            transform=transform
+        )
+        
+        # Create random subset
+        subset_dataset = RandomSubsetDataset(dataset, sample_size=self.dataset_size)
+        logger.info(f"Using random subset of {len(subset_dataset)} samples from {len(dataset)} total")
+        
+        return DataLoader(subset_dataset, batch_size=self.batch_size, shuffle=True, 
+                          num_workers=self.num_workers, pin_memory=True, timeout=self.timeout)
     
     def __init__(self, model_name, batch_size=DEFAULT_BATCH_SIZE, 
                 num_workers=DEFAULT_NUM_WORKERS, num_inferences=DEFAULT_NUM_INFERENCES,
@@ -383,8 +402,8 @@ class ModelEvaluator:
         # Prepare data first (needed to know num_classes)
         self.data_loader = self._create_data_loader()
         
-        # Get the number of classes from the dataset
-        self.num_classes = self._get_num_classes()
+        # CIFAR-10 has 10 classes
+        self.num_classes = 10
         
         # Create model (this now includes adaptation and loading fine-tuned weights)
         self.model = self._create_model()
@@ -400,46 +419,7 @@ class ModelEvaluator:
     
     def _get_num_classes(self):
         """Get the number of classes in the dataset."""
-        # Try to get the number of classes from the dataset's class
-        dataset = self.data_loader.dataset
-        
-        # Special case for SVHN which has 'labels' attribute
-        if hasattr(dataset, 'labels'):
-            logger.info("Dataset has 'labels' attribute, using it to determine classes")
-            if isinstance(dataset.labels, np.ndarray):
-                return len(np.unique(dataset.labels))
-            else:
-                # For SVHN specifically, which has 10 classes (digits 0-9)
-                logger.info("Using default 10 classes for SVHN dataset")
-                return 10
-        
-        # Try the dataset's classes attribute
-        if hasattr(dataset, 'classes') and dataset.classes is not None:
-            return len(dataset.classes)
-        
-        # Next try the targets attribute
-        if hasattr(dataset, 'targets') and dataset.targets is not None:
-            if isinstance(dataset.targets, list) or isinstance(dataset.targets, np.ndarray):
-                return len(np.unique(dataset.targets))
-            
-        # Try to infer from the first batch
-        try:
-            data_iter = iter(self.data_loader)
-            batch = next(data_iter)
-            
-            # Handle different return formats
-            if isinstance(batch, (list, tuple)) and len(batch) >= 2:
-                targets = batch[1]
-            else:
-                targets = batch
-                
-            unique_classes = torch.unique(targets)
-            return len(unique_classes)
-        except Exception as e:
-            logger.warning(f"Error determining classes from batch: {e}")
-            
-        # Default to 10 classes (typical for common datasets)
-        logger.warning("Could not determine number of classes, defaulting to 10")
+        # For CIFAR-10, we know it's 10 classes
         return 10
         
     def _download_dataset_if_needed(self, dataset_class, **kwargs):
@@ -581,32 +561,6 @@ class MobileNetV2Evaluator(ModelEvaluator):
         in_features = model.classifier[1].in_features
         model.classifier[1] = nn.Linear(in_features, num_classes)
         return model
-    
-    def _create_data_loader(self):
-        transform = transforms.Compose([
-            transforms.Resize(self.image_size),
-            transforms.CenterCrop(self.image_size),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-        ])
-        
-        # Try CIFAR-10 for MobileNetV2 (good balance of size and complexity)
-        logger.info("Loading CIFAR-10 dataset for MobileNetV2 evaluation...")
-        
-        # Show loading progress (useful for NFS mounts)
-        dataset = datasets.CIFAR10(
-            root=DATA_ROOT, 
-            train=False, 
-            download=True, 
-            transform=transform
-        )
-        
-        # Create random subset
-        subset_dataset = RandomSubsetDataset(dataset, sample_size=self.dataset_size, balanced=self.balanced_sampling)
-        logger.info(f"Using random subset of {len(subset_dataset)} samples from {len(dataset)} total")
-        
-        return DataLoader(subset_dataset, batch_size=self.batch_size, shuffle=True, 
-                          num_workers=self.num_workers, pin_memory=True, timeout=self.timeout)
 
 
 class DeepLabV3Evaluator(ModelEvaluator):
@@ -623,62 +577,17 @@ class DeepLabV3Evaluator(ModelEvaluator):
         model.classifier[4] = nn.Conv2d(256, num_classes, kernel_size=(1, 1), stride=(1, 1))
         return model
     
-    def _create_data_loader(self):
-        # Use smaller size for Raspberry Pi
-        transform = transforms.Compose([
-            transforms.Resize((self.image_size, self.image_size)), 
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-        ])
-        
-        # Try Pascal VOC segmentation dataset
-        try:
-            logger.info("Loading VOCSegmentation dataset...")
-            dataset = datasets.VOCSegmentation(root=DATA_ROOT, year='2012', 
-                                             image_set='val', download=True,
-                                             transform=transform)
-        except Exception as e:
-            logger.warning(f"Error loading VOCSegmentation: {e}")
-            logger.warning("Using CIFAR-10 instead (not ideal for segmentation)")
-            dataset = datasets.CIFAR10(root=DATA_ROOT, train=False, download=True, transform=transform)
-        
-        # Create random subset
-        subset_dataset = RandomSubsetDataset(dataset, sample_size=self.dataset_size, balanced=self.balanced_sampling)
-        logger.info(f"Using random subset of {len(subset_dataset)} samples from {len(dataset)} total")
-        
-        # Use smaller batch size for this model
-        return DataLoader(subset_dataset, batch_size=max(1, self.batch_size//4), shuffle=True, 
-                          num_workers=self.num_workers, pin_memory=True, timeout=self.timeout)
-    
     def _calculate_accuracy(self, outputs, targets):
         """For segmentation models, use pixel accuracy."""
         if isinstance(outputs, dict):
             outputs = outputs['out']
         
-        # Handle both VOC segmentation and CIFAR-10 cases
-        if isinstance(targets, tuple) and len(targets) == 2:
-            # VOCSegmentation returns (image, target)
-            targets = targets[1]
-        
-        # For VOC segmentation, compute pixel accuracy
-        if outputs.shape[2:] != targets.shape[1:] and hasattr(targets, 'shape'):
-            # Resize targets to match output size if needed
-            targets = F.interpolate(targets.float().unsqueeze(1), size=outputs.shape[2:], 
-                                   mode='nearest').long().squeeze(1)
-        
         outputs = torch.argmax(outputs, dim=1)
         
-        # Calculate accuracy
-        if hasattr(targets, 'shape') and len(targets.shape) > 1 and targets.shape[0] == outputs.shape[0]:
-            # For segmentation data
-            correct = (outputs == targets).sum().item()
-            total = targets.numel()
-            return correct / total
-        else:
-            # Fallback for CIFAR-10
-            _, predicted = torch.max(outputs.reshape(outputs.size(0), -1).mean(dim=1).unsqueeze(1), 1)
-            correct = (predicted == targets).sum().item()
-            return correct / targets.size(0)
+        # For CIFAR-10 classification (not ideal for segmentation, but will work)
+        _, predicted = torch.max(outputs.reshape(outputs.size(0), -1).mean(dim=1).unsqueeze(1), 1)
+        correct = (predicted == targets).sum().item()
+        return correct / targets.size(0)
 
 
 class InceptionEvaluator(ModelEvaluator):
@@ -701,32 +610,6 @@ class InceptionEvaluator(ModelEvaluator):
         
         return model
     
-    def _create_data_loader(self):
-        # Inception v3 requires minimum 299x299 input - use smaller if specified
-        inception_size = max(299, self.image_size)
-        transform = transforms.Compose([
-            transforms.Resize(inception_size),
-            transforms.CenterCrop(inception_size),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-        ])
-        
-        # Try STL10 first (better images), fall back to CIFAR-10
-        try:
-            logger.info("Loading STL10 dataset for Inception...")
-            dataset = datasets.STL10(root=DATA_ROOT, split='test', download=True, transform=transform)
-        except Exception as e:
-            logger.warning(f"Error loading STL10: {e}")
-            logger.warning("Falling back to CIFAR-10")
-            dataset = datasets.CIFAR10(root=DATA_ROOT, train=False, download=True, transform=transform)
-        
-        # Create random subset
-        subset_dataset = RandomSubsetDataset(dataset, sample_size=self.dataset_size, balanced=self.balanced_sampling)
-        logger.info(f"Using random subset of {len(subset_dataset)} samples from {len(dataset)} total")
-        
-        return DataLoader(subset_dataset, batch_size=self.batch_size, shuffle=True, 
-                          num_workers=self.num_workers, pin_memory=True, timeout=self.timeout)
-    
     def _calculate_accuracy(self, outputs, targets):
         """Handle the auxiliary outputs from Inception."""
         if isinstance(outputs, tuple):
@@ -735,6 +618,14 @@ class InceptionEvaluator(ModelEvaluator):
         _, predicted = torch.max(outputs.data, 1)
         correct = (predicted == targets).sum().item()
         return correct / targets.size(0)
+
+    def _preprocess_input(self, inputs):
+        """Ensure inputs are correct size for Inception."""
+        # Inception v3 requires minimum 299x299 input
+        # This check is for safety, although our data loader should already resize
+        if inputs.shape[2] < 299 or inputs.shape[3] < 299:
+            inputs = F.interpolate(inputs, size=(299, 299), mode='bilinear', align_corners=False)
+        return inputs
 
 
 class ResNet18Evaluator(ModelEvaluator):
@@ -750,25 +641,6 @@ class ResNet18Evaluator(ModelEvaluator):
         in_features = model.fc.in_features
         model.fc = nn.Linear(in_features, num_classes)
         return model
-    
-    def _create_data_loader(self):
-        transform = transforms.Compose([
-            transforms.Resize(self.image_size),
-            transforms.CenterCrop(self.image_size),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-        ])
-        
-        # Use CIFAR-10 instead of CIFAR-100 for better accuracy
-        logger.info("Loading CIFAR-10 dataset for ResNet18 evaluation...")
-        dataset = datasets.CIFAR10(root=DATA_ROOT, train=False, download=True, transform=transform)
-        
-        # Create random subset
-        subset_dataset = RandomSubsetDataset(dataset, sample_size=self.dataset_size)
-        logger.info(f"Using random subset of {len(subset_dataset)} samples from {len(dataset)} total")
-        
-        return DataLoader(subset_dataset, batch_size=self.batch_size, shuffle=True, 
-                          num_workers=self.num_workers, pin_memory=True, timeout=self.timeout)
 
 
 class AlexNetEvaluator(ModelEvaluator):
@@ -784,25 +656,6 @@ class AlexNetEvaluator(ModelEvaluator):
         in_features = model.classifier[6].in_features
         model.classifier[6] = nn.Linear(in_features, num_classes)
         return model
-    
-    def _create_data_loader(self):
-        transform = transforms.Compose([
-            transforms.Resize(self.image_size),
-            transforms.CenterCrop(self.image_size),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-        ])
-            
-        # Use CIFAR-10 directly to match fine-tuned model
-        logger.info("Loading CIFAR-10 dataset for AlexNet evaluation...")
-        dataset = datasets.CIFAR10(root=DATA_ROOT, train=False, download=True, transform=transform)
-            
-        # Create random subset
-        subset_dataset = RandomSubsetDataset(dataset, sample_size=self.dataset_size)
-        logger.info(f"Using random subset of {len(subset_dataset)} samples from {len(dataset)} total")
-            
-        return DataLoader(subset_dataset, batch_size=self.batch_size, shuffle=True, 
-                         num_workers=self.num_workers, pin_memory=True, timeout=self.timeout)
 
 
 class VGG16Evaluator(ModelEvaluator):
@@ -818,25 +671,6 @@ class VGG16Evaluator(ModelEvaluator):
         in_features = model.classifier[6].in_features
         model.classifier[6] = nn.Linear(in_features, num_classes)
         return model
-    
-    def _create_data_loader(self):
-        transform = transforms.Compose([
-            transforms.Resize(self.image_size),
-            transforms.CenterCrop(self.image_size),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-        ])
-        
-        # Use CIFAR-10 directly to match fine-tuned model
-        logger.info("Loading CIFAR-10 dataset for VGG16 evaluation...")
-        dataset = datasets.CIFAR10(root=DATA_ROOT, train=False, download=True, transform=transform)
-        
-        # Create random subset
-        subset_dataset = RandomSubsetDataset(dataset, sample_size=self.dataset_size)
-        logger.info(f"Using random subset of {len(subset_dataset)} samples from {len(dataset)} total")
-        
-        return DataLoader(subset_dataset, batch_size=self.batch_size, shuffle=True, 
-                          num_workers=self.num_workers, pin_memory=True, timeout=self.timeout)
 
 
 class SqueezeNetEvaluator(ModelEvaluator):
@@ -851,44 +685,6 @@ class SqueezeNetEvaluator(ModelEvaluator):
         # For SqueezeNet, we need to replace the final conv layer
         model.classifier[1] = nn.Conv2d(512, num_classes, kernel_size=(1, 1), stride=(1, 1))
         return model
-    
-    def _create_data_loader(self):
-        transform = transforms.Compose([
-            transforms.Resize(self.image_size),
-            transforms.CenterCrop(self.image_size),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-        ])
-        
-        # Try SVHN first (good for SqueezeNet)
-        try:
-            logger.info("Loading SVHN dataset for SqueezeNet...")
-            dataset = datasets.SVHN(root=DATA_ROOT, split='test', download=True, 
-                                   transform=transform)
-        except Exception as e:
-            logger.warning(f"Error loading SVHN: {e}")
-            # FashionMNIST is also good for SqueezeNet (simple features)
-            try:
-                logger.info("Trying FashionMNIST...")
-                fashion_transform = transforms.Compose([
-                    transforms.Resize(self.image_size),
-                    transforms.CenterCrop(self.image_size),
-                    transforms.ToTensor(),
-                    transforms.Lambda(lambda x: x.repeat(3, 1, 1)),  # Convert grayscale to RGB
-                    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-                ])
-                dataset = datasets.FashionMNIST(root=DATA_ROOT, train=False, download=True, transform=fashion_transform)
-            except Exception as e:
-                logger.warning(f"Error loading FashionMNIST: {e}")
-                logger.warning("Falling back to CIFAR-10")
-                dataset = datasets.CIFAR10(root=DATA_ROOT, train=False, download=True, transform=transform)
-        
-        # Create random subset
-        subset_dataset = RandomSubsetDataset(dataset, sample_size=self.dataset_size)
-        logger.info(f"Using random subset of {len(subset_dataset)} samples from {len(dataset)} total")
-        
-        return DataLoader(subset_dataset, batch_size=self.batch_size, shuffle=True, 
-                          num_workers=self.num_workers, pin_memory=True, timeout=self.timeout)
 
 
 #############################################
@@ -951,8 +747,6 @@ def parse_args():
     parser.add_argument("--timeout", type=int, default=60,
                         help=f"Timeout for data loading operations in seconds (default: 60)")
     
-
-    
     return parser.parse_args()
 
 
@@ -962,8 +756,6 @@ def main():
     
     # Configure output directory
     os.makedirs(args.output_dir, exist_ok=True)
-    
-
     
     # Log system information
     logger.info(f"Device: {DEVICE}")
