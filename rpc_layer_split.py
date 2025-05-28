@@ -449,7 +449,7 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
         logger.info(f"Set GLOO_SOCKET_IFNAME to enp6s0 for binding")
     else:  # Only on worker nodes
         # For WiFi connections on Raspberry Pis
-        os.environ['GLOO_SOCKET_IFNAME'] = 'wlan0'  # Typical WiFi interface name on Pis
+        os.environ['GLOO_SOCKET_IFNAME'] = 'eth0'  # Typical WiFi interface name on Pis
         logger.info(f"Set GLOO_SOCKET_IFNAME to bind to WiFi interface")
     
     # Flag to track if RPC was successfully initialized
@@ -575,7 +575,7 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
         while retry_count < max_retries and not connected:
             try:
                 # Force workers to use WiFi interface
-                os.environ['GLOO_SOCKET_IFNAME'] = 'wlan0'
+                os.environ['GLOO_SOCKET_IFNAME'] = 'eth0'
                 logger.info(f"Worker binding to interface: {os.environ.get('GLOO_SOCKET_IFNAME')}")
                 
                 # Create a more explicit RPC backend options
