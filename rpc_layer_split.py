@@ -508,7 +508,7 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
                 test_dataset = datasets.CIFAR10(
                     root=dataset_path,
                     train=False, 
-                    download=True,
+                    download=False,
                     transform=transform
                 )
                 
