@@ -502,7 +502,7 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
 ])
 
                 
-                data_path = "/export/datasets/cifar10"
+                dataset_path = "/export/datasets/cifar10"
                 logger.info(f"Loading CIFAR-10 from: {dataset_path}")
                 
                 test_dataset = datasets.CIFAR10(
