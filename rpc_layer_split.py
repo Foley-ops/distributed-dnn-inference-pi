@@ -20,6 +20,7 @@ import socket
 import sys
 from typing import List
 import psutil 
+import gc
 
 
 # Configure logging
@@ -558,6 +559,9 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
                     num_correct += (predicted == labels).sum().item()
 
                     total_images += len(images)
+
+                    del output  # explicitly delete
+                    gc.collect() # garbage collect 
 
             elapsed_time = time.time() - start_time
             logger.info(f"Inference completed on {total_images} images.")
