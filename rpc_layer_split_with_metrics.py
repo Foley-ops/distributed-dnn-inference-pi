@@ -29,7 +29,7 @@ import struct
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s [%(hostname)s:rank%(rank)s]',
+    format='%(asctime)s - %(levelname)s - %(message)s',
 )
 
 
@@ -265,7 +265,13 @@ class ShardWrapper(nn.Module):
         super().__init__()
         self.module = submodule.to("cpu")
         self.shard_id = shard_id
-        self.metrics_collector = metrics_collector
+        # Create metrics collector if None is passed (for workers)
+        if metrics_collector is None:
+            import torch.distributed.rpc as rpc
+            rank = rpc.get_worker_info().id
+            self.metrics_collector = MetricsCollector(rank)
+        else:
+            self.metrics_collector = metrics_collector
 
     def forward(self, x):  
         if not isinstance(x, torch.Tensor):
@@ -365,7 +371,30 @@ class DistributedModel(nn.Module):
         
         for i, shard_rref in enumerate(self.worker_rrefs):
             logging.info(f"Sending tensor to shard {i} on worker {self.workers[i % len(self.workers)]}")
+            
+            # Measure RPC latency
+            rpc_start_time = time.time()
             x_rref = shard_rref.rpc_sync().forward(x_rref)
+            rpc_latency = time.time() - rpc_start_time
+            
+            # Calculate data transfer size (rough estimate)
+            if isinstance(x_rref, torch.Tensor):
+                data_size_bytes = x_rref.numel() * x_rref.element_size()
+                throughput_mbps = (data_size_bytes / (1024*1024)) / rpc_latency if rpc_latency > 0 else 0
+            else:
+                data_size_bytes = None
+                throughput_mbps = None
+            
+            # Collect RPC metrics
+            if self.metrics_collector:
+                self.metrics_collector.collect_inference_metrics(
+                    event_type="rpc_call",
+                    batch_id=batch_id,
+                    shard_id=i,
+                    rpc_latency=rpc_latency,
+                    data_transfer_size_bytes=data_size_bytes,
+                    network_throughput_mbps=throughput_mbps
+                )
             
             # Stop passing to next shard if it's the last
             if i == len(self.worker_rrefs) - 1:
@@ -414,6 +443,12 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
         record.rank = rank
         return record
     logging.setLogRecordFactory(record_factory)
+    
+    # Update logging format to include hostname and rank
+    for handler in logging.root.handlers:
+        handler.setFormatter(logging.Formatter(
+            '%(asctime)s - %(levelname)s - %(message)s [%(hostname)s:rank%(rank)s]'
+        ))
     
     logger = logging.getLogger(__name__)
     logger.info("Starting distributed inference process")
@@ -583,11 +618,12 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
                 inference_time=elapsed_time
             )
             
-            # Print some results
-            if dataset == 'cifar10':
-                _, predicted = torch.max(output.data, 1)
-                logger.info(f"First few predictions: {predicted[:5]}")
-                logger.info(f"First few actual labels: {labels[:5]}")
+            # Print final results summary
+            logger.info(f"Final results summary:")
+            logger.info(f"  Total images processed: {total_images}")
+            logger.info(f"  Overall accuracy: {final_accuracy:.2f}%")
+            logger.info(f"  Total inference time: {elapsed_time:.4f} seconds")
+            logger.info(f"  Average time per image: {elapsed_time/total_images:.4f} seconds")
             
         except Exception as e:
             logger.error(f"Error in master node: {str(e)}", exc_info=True)
@@ -617,12 +653,7 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
                 
                 logger.info(f"Worker {rank} attempt {retry_count+1} to connect to master...")
                 
-                # Check if RPC is already initialized; if so, skip reinitialization
-                if hasattr(rpc, 'is_initialized') and rpc.is_initialized():
-                    logger.info("RPC is already initialized; skipping reinitialization.")
-                    connected = True
-                    rpc_initialized = True
-                    break
+                # Skip RPC initialization check since it doesn't exist
                 
                 rpc.init_rpc(
                     f"worker{rank}",
@@ -704,7 +735,7 @@ def main():
         num_classes=args.num_classes,
         dataset=args.dataset,
         num_test_samples=args.num_test_samples,
-        model=args.model,
+        model=None,  # Remove duplicate parameter
         num_splits=args.num_partitions,
         metrics_dir=args.metrics_dir,
     )
