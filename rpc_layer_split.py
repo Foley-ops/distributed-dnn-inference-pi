@@ -409,7 +409,7 @@ class DistributedModel(nn.Module):
             remote_params.extend(rref.remote().parameter_rrefs().to_here())
         return remote_params
 
-def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, num_classes, dataset, num_batches, model, num_splits):
+def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, num_classes, dataset, num_test_samples, model, num_splits):
     """
     Main function to run distributed inference
     """
@@ -529,11 +529,19 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
             
             total_images = 0
             num_correct = 0
+            num_batches = (num_test_samples + batch_size - 1) // batch_size
 
             with torch.no_grad():
                 for i, (images, labels) in enumerate(test_loader):
-                    if i == num_batches:
+                    # break if specified number of test images has been reached 
+                    remaining = num_test_samples - total_images
+                    if remaining <= 0:
                         break
+
+                    # If current batch has more images than we need, trim it
+                    if images.size(0) > remaining:
+                        images = images[:remaining]
+                        labels = labels[:remaining]
 
                     logger.info(f"Running inference on batch {i+1}/{num_batches} with shape: {images.shape}")
                     batch_start_time = time.time()
@@ -647,7 +655,7 @@ def main():
     parser.add_argument("--dataset", type=str, default="cifar10", 
                         choices=["cifar10", "dummy"],
                         help="Dataset to use for inference")
-    parser.add_argument("--num-batches", type=int, default=3, help="Number of batches to run during inference")
+    parser.add_argument("--num-test-samples", type=int, default=10, help="Number of images to test on during inference")
     parser.add_argument("--num-partitions", type=int, default=2, help="Number of partitions to split the model into")
 
 
@@ -663,7 +671,7 @@ def main():
         num_micro_batches=args.micro_batches,
         num_classes=args.num_classes,
         dataset=args.dataset,
-        num_batches=args.num_batches,
+        num_test_samples=args.num_test_samples,
         model=args.model,
         num_splits=args.num_partitions,
     )
