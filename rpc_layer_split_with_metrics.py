@@ -195,9 +195,20 @@ class MetricsCollector:
             'rank', 'hostname'  
         ]
         
+        # Check if file exists and has headers
+        file_exists = os.path.exists(self.csv_file)
+        has_headers = False
+        if file_exists:
+            with open(self.csv_file, 'r') as f:
+                first_line = f.readline().strip()
+                has_headers = first_line and 'model_name' in first_line
+        
         # Append worker summaries to master CSV
         with open(self.csv_file, 'a', newline='') as f:
             writer = csv.writer(f)
+            # Write headers if file doesn't exist or doesn't have headers
+            if not file_exists or not has_headers:
+                writer.writerow(headers)
             for summary in worker_summaries:
                 writer.writerow([summary[key] for key in headers])
         
