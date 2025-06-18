@@ -126,6 +126,20 @@ class MetricsCollector:
                 'accuracy', 'total_images', 'predictions', 'actual_labels'
             ]])
     
+    def get_metrics_data(self):
+        """Return all collected metrics data"""
+        return self.metrics_data
+    
+    def merge_worker_metrics(self, worker_metrics_list):
+        """Merge metrics from workers into master's dataset"""
+        for worker_metrics in worker_metrics_list:
+            self.metrics_data.extend(worker_metrics)
+            # Write worker metrics to master's CSV
+            for record in worker_metrics:
+                self._write_to_csv(record)
+        
+        logging.info(f"Merged metrics from {len(worker_metrics_list)} workers")
+    
     def finalize(self):
         logging.info(f"Metrics saved to: {self.csv_file}")
         logging.info(f"Total metrics records: {len(self.metrics_data)}")
@@ -421,6 +435,16 @@ class DistributedModel(nn.Module):
         return remote_params
 
 
+# Global metrics collector for RPC access
+global_metrics_collector = None
+
+def collect_worker_metrics():
+    """RPC method for master to collect metrics from workers"""
+    global global_metrics_collector
+    if global_metrics_collector:
+        return global_metrics_collector.get_metrics_data()
+    return []
+
 def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, num_classes, dataset, num_test_samples, model, num_splits, metrics_dir):
     """
     Main function to run distributed inference with metrics collection
@@ -430,6 +454,10 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
     
     # Initialize metrics collector
     metrics_collector = MetricsCollector(rank, metrics_dir)
+    
+    # Make metrics collector globally accessible for RPC
+    global global_metrics_collector
+    global_metrics_collector = metrics_collector
     
     # Record start of process
     metrics_collector.collect_inference_metrics("process_start")
@@ -624,6 +652,23 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
             logger.info(f"  Overall accuracy: {final_accuracy:.2f}%")
             logger.info(f"  Total inference time: {elapsed_time:.4f} seconds")
             logger.info(f"  Average time per image: {elapsed_time/total_images:.4f} seconds")
+            
+            # Collect metrics from all workers after inference is complete
+            logger.info("Collecting metrics from workers...")
+            worker_metrics_list = []
+            for i in range(1, world_size):  # Skip rank 0 (master)
+                worker_name = f"worker{i}"
+                try:
+                    worker_metrics = rpc.rpc_sync(worker_name, collect_worker_metrics)
+                    worker_metrics_list.append(worker_metrics)
+                    logger.info(f"Collected {len(worker_metrics)} metrics from {worker_name}")
+                except Exception as e:
+                    logger.warning(f"Failed to collect metrics from {worker_name}: {e}")
+            
+            # Merge all worker metrics into master's dataset
+            if worker_metrics_list:
+                metrics_collector.merge_worker_metrics(worker_metrics_list)
+                logger.info("Successfully merged all worker metrics into master dataset")
             
         except Exception as e:
             logger.error(f"Error in master node: {str(e)}", exc_info=True)
