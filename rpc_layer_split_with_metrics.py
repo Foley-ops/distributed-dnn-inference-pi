@@ -39,110 +39,175 @@ class MetricsCollector:
         self.rank = rank
         self.hostname = socket.gethostname()
         self.output_dir = output_dir
-        self.metrics_data = []
+        
+        # Summary metrics storage
+        self.accuracy_values = []
+        self.inference_times = []
+        self.cpu_usage_values = []
+        self.memory_usage_values = []
+        self.rpc_latencies = []
+        self.throughput_values = []
+        self.total_inferences = 0
+        
+        # System info (collected once)
+        self.system_info = self._get_system_info()
         
         # Create output directory if it doesn't exist
         os.makedirs(output_dir, exist_ok=True)
         
         # CSV file path
-        self.csv_file = os.path.join(output_dir, f"metrics_rank_{rank}_{self.hostname}.csv")
-        
-        # Initialize CSV file with headers
-        self.init_csv()
+        self.csv_file = os.path.join(output_dir, f"metrics_summary_rank_{rank}_{self.hostname}.csv")
     
-    def init_csv(self):
-        headers = [
-            'timestamp', 'datetime', 'rank', 'hostname', 'event_type',
-            'batch_id', 'shard_id', 'image_id', 'tensor_shape', 
-            'inference_time', 'per_image_inference_time', 'rpc_latency', 
-            'data_transfer_size_bytes', 'network_throughput_mbps',
-            'memory_percent', 'memory_used_gb', 'cpu_percent',
-            'accuracy', 'total_images', 'predictions', 'actual_labels'
-        ]
+    def _get_system_info(self):
+        """Collect system information once"""
+        import platform
         
-        with open(self.csv_file, 'w', newline='') as f:
-            writer = csv.writer(f)
-            writer.writerow(headers)
-    
-    def collect_inference_metrics(self, event_type, batch_id=None, shard_id=None, 
-                                image_id=None, tensor_shape=None, inference_time=None,
-                                per_image_inference_time=None, rpc_latency=None,
-                                data_transfer_size_bytes=None, network_throughput_mbps=None,
-                                accuracy=None, total_images=None, 
-                                predictions=None, actual_labels=None):
-        
-        # Get system metrics
-        memory = psutil.virtual_memory()
-        memory_used_gb = round((memory.total - memory.available) / (1024**3), 2)
-        memory_percent = memory.percent
-        cpu_percent = psutil.cpu_percent()
-        
-        # Create metrics record
-        timestamp = time.time()
-        datetime_str = datetime.fromtimestamp(timestamp).strftime('%Y-%m-%d %H:%M:%S.%f')
-        
-        metrics_record = {
-            'timestamp': timestamp,
-            'datetime': datetime_str,
-            'rank': self.rank,
-            'hostname': self.hostname,
-            'event_type': event_type,
-            'batch_id': batch_id,
-            'shard_id': shard_id,
-            'image_id': image_id,
-            'tensor_shape': str(tensor_shape) if tensor_shape is not None else None,
-            'inference_time': inference_time,
-            'per_image_inference_time': per_image_inference_time,
-            'rpc_latency': rpc_latency,
-            'data_transfer_size_bytes': data_transfer_size_bytes,
-            'network_throughput_mbps': network_throughput_mbps,
-            'memory_percent': memory_percent,
-            'memory_used_gb': memory_used_gb,
-            'cpu_percent': cpu_percent,
-            'accuracy': accuracy,
-            'total_images': total_images,
-            'predictions': str(predictions.tolist()) if predictions is not None else None,
-            'actual_labels': str(actual_labels.tolist()) if actual_labels is not None else None
+        system_info = {
+            'device': f"{self.hostname}_rank_{self.rank}",
+            'cpu_name': platform.processor() or 'Unknown',
+            'cpu_freq_mhz': 0,  # Will try to get actual freq
+            'gpu_name': 'CPU_Only',  # Default for Pi
+            'gpu_memory_mb': 0,
+            'total_memory_mb': round(psutil.virtual_memory().total / (1024*1024))
         }
         
-        # Store in memory and write to CSV immediately
-        self.metrics_data.append(metrics_record)
-        self._write_to_csv(metrics_record)
-        
-        # Also log key metrics
-        logging.info(f"[METRICS] {event_type} - Memory: {memory_percent}%, CPU: {cpu_percent}%, "
-                    f"Inference time: {inference_time}, RPC latency: {rpc_latency}, "
-                    f"Throughput: {network_throughput_mbps} Mbps")
+        # Try to get CPU frequency
+        try:
+            cpu_freq = psutil.cpu_freq()
+            if cpu_freq:
+                system_info['cpu_freq_mhz'] = round(cpu_freq.current)
+        except:
+            pass
+            
+        # Try to detect GPU (basic check)
+        try:
+            import torch
+            if torch.cuda.is_available():
+                system_info['gpu_name'] = torch.cuda.get_device_name(0)
+                system_info['gpu_memory_mb'] = round(torch.cuda.get_device_properties(0).total_memory / (1024*1024))
+        except:
+            pass
+            
+        return system_info
     
-    def _write_to_csv(self, record):
+    def collect_metrics(self, inference_time=None, accuracy=None, rpc_latency=None, 
+                       network_throughput_mbps=None, total_images=None):
+        """Collect metrics for aggregation (called during inference)"""
+        
+        # Get current system metrics
+        memory = psutil.virtual_memory()
+        memory_used_mb = round((memory.total - memory.available) / (1024*1024))
+        cpu_percent = psutil.cpu_percent()
+        
+        # Store values for later aggregation
+        if inference_time is not None:
+            self.inference_times.append(inference_time * 1000)  # Convert to ms
+            
+        if accuracy is not None:
+            self.accuracy_values.append(accuracy)
+            
+        if rpc_latency is not None:
+            self.rpc_latencies.append(rpc_latency)
+            
+        if network_throughput_mbps is not None:
+            self.throughput_values.append(network_throughput_mbps)
+            
+        if total_images is not None:
+            self.total_inferences += total_images
+            
+        # Always collect system metrics
+        self.cpu_usage_values.append(cpu_percent)
+        self.memory_usage_values.append(memory_used_mb)
+    
+    def _safe_avg(self, values):
+        """Calculate average, return 0 if empty"""
+        return sum(values) / len(values) if values else 0
+    
+    def _safe_std(self, values):
+        """Calculate standard deviation, return 0 if empty or single value"""
+        if len(values) < 2:
+            return 0
+        avg = self._safe_avg(values)
+        variance = sum((x - avg) ** 2 for x in values) / len(values)
+        return variance ** 0.5
+    
+    def generate_summary(self, model_name, batch_size, num_parameters=0):
+        """Generate summary statistics"""
+        return {
+            'model_name': model_name,
+            'avg_accuracy': round(self._safe_avg(self.accuracy_values), 2),
+            'avg_cpu_freq_mhz': self.system_info['cpu_freq_mhz'],
+            'avg_cpu_usage_percent': round(self._safe_avg(self.cpu_usage_values), 2),
+            'avg_gpu_freq_mhz': 0,  # Not easily available
+            'avg_gpu_memory_usage_mb': 0,  # Would need GPU monitoring
+            'avg_gpu_usage_percent': 0,  # Would need GPU monitoring  
+            'avg_inference_time_ms': round(self._safe_avg(self.inference_times), 2),
+            'avg_memory_usage_mb': round(self._safe_avg(self.memory_usage_values), 2),
+            'batch_size': batch_size,
+            'device': self.system_info['device'],
+            'gpu_name': self.system_info['gpu_name'],
+            'num_inferences': self.total_inferences,
+            'num_parameters': num_parameters,
+            'std_accuracy': round(self._safe_std(self.accuracy_values), 2),
+            'std_inference_time_ms': round(self._safe_std(self.inference_times), 2),
+            'total_rpc_latency': round(sum(self.rpc_latencies), 4),
+            'total_throughput_mbps': round(sum(self.throughput_values), 2),
+            'rank': self.rank,
+            'hostname': self.hostname
+        }
+    
+    def write_summary_to_csv(self, model_name, batch_size, num_parameters=0):
+        """Write summary statistics to CSV (one row per run)"""
+        summary = self.generate_summary(model_name, batch_size, num_parameters)
+        
+        headers = [
+            'model_name', 'avg_accuracy', 'avg_cpu_freq_mhz', 'avg_cpu_usage_percent',
+            'avg_gpu_freq_mhz', 'avg_gpu_memory_usage_mb', 'avg_gpu_usage_percent',
+            'avg_inference_time_ms', 'avg_memory_usage_mb', 'batch_size', 'device',
+            'gpu_name', 'num_inferences', 'num_parameters', 'std_accuracy',
+            'std_inference_time_ms', 'total_rpc_latency', 'total_throughput_mbps',
+            'rank', 'hostname'
+        ]
+        
+        # Write header if file doesn't exist
+        file_exists = os.path.exists(self.csv_file)
         with open(self.csv_file, 'a', newline='') as f:
             writer = csv.writer(f)
-            writer.writerow([record[key] for key in [
-                'timestamp', 'datetime', 'rank', 'hostname', 'event_type',
-                'batch_id', 'shard_id', 'image_id', 'tensor_shape', 
-                'inference_time', 'per_image_inference_time', 'rpc_latency',
-                'data_transfer_size_bytes', 'network_throughput_mbps',
-                'memory_percent', 'memory_used_gb', 'cpu_percent',
-                'accuracy', 'total_images', 'predictions', 'actual_labels'
-            ]])
+            if not file_exists:
+                writer.writerow(headers)
+            writer.writerow([summary[key] for key in headers])
     
-    def get_metrics_data(self):
-        """Return all collected metrics data"""
-        return self.metrics_data
+    def get_summary_data(self, model_name, batch_size, num_parameters=0):
+        """Return summary data for merging"""
+        return self.generate_summary(model_name, batch_size, num_parameters)
     
-    def merge_worker_metrics(self, worker_metrics_list):
-        """Merge metrics from workers into master's dataset"""
-        for worker_metrics in worker_metrics_list:
-            self.metrics_data.extend(worker_metrics)
-            # Write worker metrics to master's CSV
-            for record in worker_metrics:
-                self._write_to_csv(record)
+    def merge_worker_summaries(self, worker_summaries):
+        """Merge worker summary data into master CSV"""
+        if not worker_summaries:
+            return
+            
+        headers = [
+            'model_name', 'avg_accuracy', 'avg_cpu_freq_mhz', 'avg_cpu_usage_percent',
+            'avg_gpu_freq_mhz', 'avg_gpu_memory_usage_mb', 'avg_gpu_usage_percent',
+            'avg_inference_time_ms', 'avg_memory_usage_mb', 'batch_size', 'device',
+            'gpu_name', 'num_inferences', 'num_parameters', 'std_accuracy',
+            'std_inference_time_ms', 'total_rpc_latency', 'total_throughput_mbps',
+            'rank', 'hostname'  
+        ]
         
-        logging.info(f"Merged metrics from {len(worker_metrics_list)} workers")
+        # Append worker summaries to master CSV
+        with open(self.csv_file, 'a', newline='') as f:
+            writer = csv.writer(f)
+            for summary in worker_summaries:
+                writer.writerow([summary[key] for key in headers])
+        
+        logging.info(f"Merged summaries from {len(worker_summaries)} workers into {self.csv_file}")
     
-    def finalize(self):
-        logging.info(f"Metrics saved to: {self.csv_file}")
-        logging.info(f"Total metrics records: {len(self.metrics_data)}")
+    def finalize(self, model_name, batch_size, num_parameters=0):
+        """Write final summary and log completion"""
+        self.write_summary_to_csv(model_name, batch_size, num_parameters)
+        logging.info(f"Summary metrics saved to: {self.csv_file}")
+        logging.info(f"Total inferences processed: {self.total_inferences}")
 
 
 # split model into desired number of partitions
@@ -305,10 +370,7 @@ class ShardWrapper(nn.Module):
         inference_time = time.time() - start_time
         
         # Collect metrics
-        self.metrics_collector.collect_inference_metrics(
-            event_type="shard_inference",
-            shard_id=self.shard_id,
-            tensor_shape=x.shape,
+        self.metrics_collector.collect_metrics(
             inference_time=inference_time
         )
 
@@ -401,12 +463,8 @@ class DistributedModel(nn.Module):
             
             # Collect RPC metrics
             if self.metrics_collector:
-                self.metrics_collector.collect_inference_metrics(
-                    event_type="rpc_call",
-                    batch_id=batch_id,
-                    shard_id=i,
+                self.metrics_collector.collect_metrics(
                     rpc_latency=rpc_latency,
-                    data_transfer_size_bytes=data_size_bytes,
                     network_throughput_mbps=throughput_mbps
                 )
             
@@ -419,10 +477,7 @@ class DistributedModel(nn.Module):
         
         # Collect batch-level metrics on master
         if self.metrics_collector:
-            self.metrics_collector.collect_inference_metrics(
-                event_type="batch_complete",
-                batch_id=batch_id,
-                tensor_shape=x.shape,
+            self.metrics_collector.collect_metrics(
                 inference_time=batch_total_time
             )
 
@@ -438,12 +493,12 @@ class DistributedModel(nn.Module):
 # Global metrics collector for RPC access
 global_metrics_collector = None
 
-def collect_worker_metrics():
-    """RPC method for master to collect metrics from workers"""
+def collect_worker_summary(model_name, batch_size, num_parameters=0):
+    """RPC method for master to collect summary from workers"""
     global global_metrics_collector
     if global_metrics_collector:
-        return global_metrics_collector.get_metrics_data()
-    return []
+        return global_metrics_collector.get_summary_data(model_name, batch_size, num_parameters)
+    return {}
 
 def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, num_classes, dataset, num_test_samples, model, num_splits, metrics_dir):
     """
@@ -459,8 +514,8 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
     global global_metrics_collector
     global_metrics_collector = metrics_collector
     
-    # Record start of process
-    metrics_collector.collect_inference_metrics("process_start")
+    # Record start of process - just collect system metrics
+    metrics_collector.collect_metrics()
 
     # Add hostname to log formatter
     hostname = socket.gethostname()
@@ -531,7 +586,7 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
             rpc_initialized = True
             
             # Record RPC initialization
-            metrics_collector.collect_inference_metrics("rpc_initialized")
+            metrics_collector.collect_metrics()
             
             # Define worker names
             workers = [f"worker{i}" for i in range(1, world_size)]
@@ -547,8 +602,8 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
             )
             logger.info("Distributed model created successfully")
             
-            # Record model setup
-            metrics_collector.collect_inference_metrics("model_setup_complete")
+            # Record model setup  
+            metrics_collector.collect_metrics()
             
             # Load data
             logger.info(f"Loading {dataset} dataset")
@@ -582,7 +637,7 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
                 logger.info(f"Using dummy data with shape: {images.shape}")
             
             # Record data loading
-            metrics_collector.collect_inference_metrics("data_loaded")
+            metrics_collector.collect_metrics()
             
             # Run inference
             logger.info("Starting inference...")
@@ -622,13 +677,9 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
                     batch_accuracy = (predicted == labels).sum().item() / len(labels) * 100.0
                     
                     # Record batch results
-                    metrics_collector.collect_inference_metrics(
-                        event_type="batch_result",
-                        batch_id=i,
+                    metrics_collector.collect_metrics(
                         accuracy=batch_accuracy,
-                        total_images=len(images),
-                        predictions=predicted[:10],  # First 10 predictions
-                        actual_labels=labels[:10]    # First 10 actual labels
+                        total_images=len(images)
                     )
 
             elapsed_time = time.time() - start_time
@@ -639,10 +690,8 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
             logger.info(f"Inference completed in {elapsed_time:.4f} seconds")
             
             # Record final results
-            metrics_collector.collect_inference_metrics(
-                event_type="inference_complete",
+            metrics_collector.collect_metrics(
                 accuracy=final_accuracy,
-                total_images=total_images,
                 inference_time=elapsed_time
             )
             
@@ -653,26 +702,30 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
             logger.info(f"  Total inference time: {elapsed_time:.4f} seconds")
             logger.info(f"  Average time per image: {elapsed_time/total_images:.4f} seconds")
             
-            # Collect metrics from all workers after inference is complete
-            logger.info("Collecting metrics from workers...")
-            worker_metrics_list = []
+            # Collect summaries from all workers after inference is complete
+            logger.info("Collecting summary metrics from workers...")
+            worker_summaries = []
+            
+            # Get model parameter count for summary
+            num_parameters = sum(p.numel() for p in model.parameters())
+            
             for i in range(1, world_size):  # Skip rank 0 (master)
                 worker_name = f"worker{i}"
                 try:
-                    worker_metrics = rpc.rpc_sync(worker_name, collect_worker_metrics)
-                    worker_metrics_list.append(worker_metrics)
-                    logger.info(f"Collected {len(worker_metrics)} metrics from {worker_name}")
+                    worker_summary = rpc.rpc_sync(worker_name, collect_worker_summary, 
+                                                args=(model_type, batch_size, num_parameters))
+                    worker_summaries.append(worker_summary)
+                    logger.info(f"Collected summary from {worker_name}")
                 except Exception as e:
-                    logger.warning(f"Failed to collect metrics from {worker_name}: {e}")
+                    logger.warning(f"Failed to collect summary from {worker_name}: {e}")
             
-            # Merge all worker metrics into master's dataset
-            if worker_metrics_list:
-                metrics_collector.merge_worker_metrics(worker_metrics_list)
-                logger.info("Successfully merged all worker metrics into master dataset")
+            # Merge all worker summaries into master's CSV
+            if worker_summaries:
+                metrics_collector.merge_worker_summaries(worker_summaries)
+                logger.info("Successfully merged all worker summaries into master CSV")
             
         except Exception as e:
             logger.error(f"Error in master node: {str(e)}", exc_info=True)
-            metrics_collector.collect_inference_metrics("error", inference_time=None)
             
     else:  # Workers
         logger.info(f"Initializing worker node with rank {rank}")
@@ -711,12 +764,11 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
                 rpc_initialized = True
                 
                 # Record successful connection
-                metrics_collector.collect_inference_metrics("worker_connected")
+                metrics_collector.collect_metrics()
                 
             except Exception as e:
                 retry_count += 1
                 logger.warning(f"Connection attempt {retry_count} failed: {str(e)}")
-                metrics_collector.collect_inference_metrics("connection_failed")
                 
                 if retry_count >= max_retries:
                     logger.error(f"Worker {rank} failed to connect after {max_retries} attempts")
@@ -727,12 +779,8 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
 
     if not connected and rank != 0:
         logger.error("Worker failed to connect to master node")
-        metrics_collector.collect_inference_metrics("worker_failed")
         # Exit with a non-zero code so the shell script knows to retry
         sys.exit(1)
-    
-    # Record process completion
-    metrics_collector.collect_inference_metrics("process_complete")
     
     # Only call shutdown if RPC was successfully initialized
     if rpc_initialized:
@@ -740,14 +788,18 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
         try:
             rpc.shutdown()
             logger.info("RPC shutdown complete")
-            metrics_collector.collect_inference_metrics("rpc_shutdown")
         except Exception as e:
             logger.error(f"Error during shutdown: {str(e)}")
     else:
         logger.warning("RPC was never successfully initialized, skipping shutdown")
     
-    # Finalize metrics collection
-    metrics_collector.finalize()
+    # Finalize metrics collection with summary
+    # Get model parameter count if we have a model
+    num_parameters = 0
+    if rank == 0 and 'model' in locals():
+        num_parameters = sum(p.numel() for p in model.parameters())
+    
+    metrics_collector.finalize(model_type, batch_size, num_parameters)
 
 
 def main():
