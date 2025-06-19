@@ -349,6 +349,30 @@ def split_model_into_n_shards(model: nn.Module, n: int) -> List[nn.Sequential]:
     else:
         raise ValueError(f"Unsupported model type: {type(model)}")
 
+def split_model_layers_by_proportion((model: nn.Module, r: float) -> List[nn.Sequential]):
+    if isinstance(model, torchvision_models.MobileNetV2):
+        # get list of features and classifier layers 
+        features = list(model.features.children())
+        classifier = list(model.classifier.children())
+        full_model_layers = features + classifier
+        
+        # determine index to split at 
+        split_index = (int)(len(full_model_layers) * r)
+
+        print(f"Num Layers: {len(full_model_layers)}")
+        print(f"Ratio: {r}")
+        print(f"split index: {split_index}")
+
+        # split model 
+        shard1 = nn.Sequential(*full_model_layers[:split_index])
+        shard2 = nn.Sequential(*full_model_layers[split_index:])
+        return [shard1, shard2]
+
+
+        
+def split_model_blocks_by_proportion((model: nn.Module, r: float) -> List[nn.Sequential]):
+    # TODO: I imagine we can use the list of blocks from the time_measurer code to help build this function
+    return 
 
 class ShardWrapper(nn.Module):
     def __init__(self, submodule, shard_id, metrics_collector):
@@ -442,7 +466,7 @@ class DistributedModel(nn.Module):
         model.eval()
 
         # Split and deploy to workers
-        self.shards = split_model_into_n_shards(model, num_splits)
+        self.shards = split_model_layers_by_proportion(model, split_proportion)
 
         for i, shard in enumerate(self.shards):
             worker_name = self.workers[i % len(self.workers)]  # round robin if num_splits > len(workers)
@@ -828,7 +852,7 @@ def main():
                         choices=["cifar10", "dummy"],
                         help="Dataset to use for inference")
     parser.add_argument("--num-test-samples", type=int, default=10, help="Number of images to test on during inference")
-    parser.add_argument("--num-partitions", type=int, default=2, help="Number of partitions to split the model into")
+    parser.add_argument("--split-proportion", type=int, default=0.5, help="Proportion of model to split at into 2 shards")
     parser.add_argument("--metrics-dir", type=str, default="./metrics", help="Directory to save metrics CSV files")
     
     args = parser.parse_args()
@@ -843,8 +867,7 @@ def main():
         num_classes=args.num_classes,
         dataset=args.dataset,
         num_test_samples=args.num_test_samples,
-        model=None,  # Remove duplicate parameter
-        num_splits=args.num_partitions,
+        split_proportion=args.split_proportion,
         metrics_dir=args.metrics_dir,
     )
 
