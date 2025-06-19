@@ -20,169 +20,205 @@ import socket
 import sys
 from typing import List
 import psutil 
+import csv
+from datetime import datetime
+import pickle
+import struct
 
 
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s [%(hostname)s:rank%(rank)s]',
+    format='%(asctime)s - %(levelname)s - %(message)s',
 )
 
-'''
-# Base class for model shards
-class ModelShardBase(nn.Module):
-    def __init__(self, device):
-        super(ModelShardBase, self).__init__()
-        self.device = device
-    
-    def forward(self, x_rref):
-        raise NotImplementedError("Subclasses must implement forward method")
-    
-    def parameter_rrefs(self):
-        param_rrefs = []
-        for param in self.parameters():
-            param_rrefs.append(RRef(param))
-        return param_rrefs
 
-# First half of model
-class Shard1(ModelShardBase):
-    def __init__(self, device, model, num_classes=10):
-        super(Shard1, self).__init__(device)
+# Metrics collection class
+class MetricsCollector:
+    def __init__(self, rank, output_dir="./metrics"):
+        self.rank = rank
+        self.hostname = socket.gethostname()
+        self.output_dir = output_dir
         
-        # load model 
-        # TODO: make num_classes vs the chosen dataset vs the loaded weights file checking more robust 
-        # for now, the models finetuned on cifar will need num_classes=10
-        if (model == "mobilenetv2"):
-            complete_model = torchvision_models.mobilenet_v2(weights=None)  
-            state_dict = torch.load("mobilenetv2_cifar10.pth", map_location=torch.device(device)) 
-
-            # adjust number of output classes if needed 
-            if num_classes != 1000: 
-                complete_model.classifier[1] = nn.Linear(complete_model.last_channel, num_classes)
-
-        elif (model == "inceptionv3"):
-            complete_model = torchvision_models.inceptionv3(weights=None) 
-            state_dict = torch.load("inception_cifar10.pth", map_location=torch.device(device)) 
-
-            # adjust number of output classes if needed 
-            if num_classes != 1000: 
-                complete_model.fc = nn.Linear(model.fc.in_features, num_classes)
-
-        else:
-            logger.error("model name not recognized")
-
-        # load the saved weights into complete_model    
-        complete_model.load_state_dict(state_dict)
-        complete_model.eval()
-
-        # First shard includes the features up to halfway point
-        features = complete_model.features
-        split_idx = len(features) // 2
+        # Summary metrics storage
+        self.accuracy_values = []
+        self.inference_times = []
+        self.cpu_usage_values = []
+        self.memory_usage_values = []
+        self.rpc_latencies = []
+        self.throughput_values = []
+        self.total_inferences = 0
         
-        self.features_first_half = nn.Sequential(*list(features.children())[:split_idx])
-        self.features_first_half.to(self.device)
+        # System info (collected once)
+        self.system_info = self._get_system_info()
+        
+        # Create output directory if it doesn't exist
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # CSV file path
+        self.csv_file = os.path.join(output_dir, f"metrics_summary_rank_{rank}_{self.hostname}.csv")
     
-    def forward(self, x_rref):
-        logging.info(f"Shard1: Received input tensor with shape {x_rref.to_here().shape}")
-
-        x = x_rref.to_here().to(self.device)
-
-        worker_inference_start_time = time.time() # record start time
-        cpu_percent = psutil.cpu_percent()
-
-        output = self.features_first_half(x) # inference 
+    def _get_system_info(self):
+        """Collect system information once"""
+        import platform
         
-        # temporary memory stats collection 
+        system_info = {
+            'device': f"{self.hostname}_rank_{self.rank}",
+            'cpu_name': platform.processor() or 'Unknown',
+            'cpu_freq_mhz': 0,  # Will try to get actual freq
+            'gpu_name': 'CPU_Only',  # Default for Pi
+            'gpu_memory_mb': 0,
+            'total_memory_mb': round(psutil.virtual_memory().total / (1024*1024))
+        }
+        
+        # Try to get CPU frequency
+        try:
+            cpu_freq = psutil.cpu_freq()
+            if cpu_freq:
+                system_info['cpu_freq_mhz'] = round(cpu_freq.current)
+        except:
+            pass
+            
+        # Try to detect GPU (basic check)
+        try:
+            import torch
+            if torch.cuda.is_available():
+                system_info['gpu_name'] = torch.cuda.get_device_name(0)
+                system_info['gpu_memory_mb'] = round(torch.cuda.get_device_properties(0).total_memory / (1024*1024))
+        except:
+            pass
+            
+        return system_info
+    
+    def collect_metrics(self, inference_time=None, accuracy=None, rpc_latency=None, 
+                       network_throughput_mbps=None, total_images=None):
+        """Collect metrics for aggregation (called during inference)"""
+        
+        # Get current system metrics
         memory = psutil.virtual_memory()
-        memory_used_gb = round((memory.total - memory.available) / (1024**3), 2)
-        memory_percent = memory.percent
-        logging.info(f"Memory Usage Percent: {memory_percent}")
-        logging.info(f"Memory Used GB: {memory_used_gb}")
-
-        # temporary CPU usge percent collection 
+        memory_used_mb = round((memory.total - memory.available) / (1024*1024))
         cpu_percent = psutil.cpu_percent()
-        logging.info(f"CPU Usage Percentage (%): {cpu_percent}")
-
-        worker_inference_total_time = time.time() - worker_inference_start_time # calculate time spent on inference 
-        logging.info(f"Time spent on inference: {worker_inference_total_time}")
-
-        logging.info(f"MobileNetV2Shard1: Produced output tensor with shape {output.shape}")
-        # Return to CPU for RPC transfer
-        return output.cpu()
-
-# Second half of model
-class Shard2(ModelShardBase):
-    def __init__(self, device, model, num_classes=10):
-        super(Shard2, self).__init__(device)
         
-        # load model 
-        # TODO: make num_classes vs the chosen dataset vs the loaded weights file checking more robust 
-        # for now, the models finetuned on cifar will need num_classes=10
-        if (model == "mobilenetv2"):
-            complete_model = torchvision_models.mobilenet_v2(weights=None)  
-            state_dict = torch.load("mobilenetv2_cifar10.pth", map_location=torch.device(device)) 
-
-            # adjust number of output classes if needed 
-            if num_classes != 1000: 
-                complete_model.classifier[1] = nn.Linear(complete_model.last_channel, num_classes)
-
-        elif (model == "inceptionv3"):
-            complete_model = torchvision_models.inceptionv3(weights=None) 
-            state_dict = torch.load("inception_cifar10.pth", map_location=torch.device(device)) 
-
-            # adjust number of output classes if needed 
-            if num_classes != 1000: 
-                model.fc = nn.Linear(model.fc.in_features, num_classes)
-
-        else:
-            logger.error("model name not recognized")
-
-        # load the saved weights into complete_model
-        complete_model.load_state_dict(state_dict)
-        complete_model.eval()
-
-        # Extract the second half of features and the classifier
-        features = complete_model.features
-        split_idx = len(features) // 2
-        
-        self.features_second_half = nn.Sequential(*list(features.children())[split_idx:])
-        self.classifier = complete_model.classifier
-        
-        self.features_second_half.to(self.device)
-        self.classifier.to(self.device)
+        # Store values for later aggregation
+        if inference_time is not None:
+            self.inference_times.append(inference_time * 1000)  # Convert to ms
+            
+        if accuracy is not None:
+            self.accuracy_values.append(accuracy)
+            
+        if rpc_latency is not None:
+            self.rpc_latencies.append(rpc_latency)
+            
+        if network_throughput_mbps is not None:
+            self.throughput_values.append(network_throughput_mbps)
+            
+        if total_images is not None:
+            self.total_inferences += total_images
+            
+        # Always collect system metrics
+        self.cpu_usage_values.append(cpu_percent)
+        self.memory_usage_values.append(memory_used_mb)
     
-    def forward(self, x_rref):
-        logging.info(f"Shard2: Received input tensor with shape {x_rref.to_here().shape}")
-
-        x = x_rref.to_here().to(self.device)
-
-        worker_inference_start_time = time.time() # record start time
-        cpu_percent = psutil.cpu_percent()
-
-        x = self.features_second_half(x)
-        x = nn.functional.adaptive_avg_pool2d(x, (1, 1))
-        x = torch.flatten(x, 1)
-        x = self.classifier(x)
-
-        # temporary memory stats collection 
-        memory = psutil.virtual_memory()
-        memory_used_gb = round((memory.total - memory.available) / (1024**3), 2)
-        memory_percent = memory.percent
-        logging.info(f"Memory Usage Percent: {memory_percent}")
-        logging.info(f"Memory Used GB: {memory_used_gb}")
-
-        # temporary CPU usge percent collection 
-        cpu_percent = psutil.cpu_percent()
-        logging.info(f"CPU Usage Percentage (%): {cpu_percent}")
-
-        worker_inference_total_time = time.time() - worker_inference_start_time # calculate time spent on inference 
-        logging.info(f"Time spent on inference: {worker_inference_total_time}")
-
-        logging.info(f"Shard2: Produced output tensor with shape {x.shape}")
-        # Return to CPU for RPC transfer
-        return x.cpu()
-
-'''
+    def _safe_avg(self, values):
+        """Calculate average, return 0 if empty"""
+        return sum(values) / len(values) if values else 0
+    
+    def _safe_std(self, values):
+        """Calculate standard deviation, return 0 if empty or single value"""
+        if len(values) < 2:
+            return 0
+        avg = self._safe_avg(values)
+        variance = sum((x - avg) ** 2 for x in values) / len(values)
+        return variance ** 0.5
+    
+    def generate_summary(self, model_name, batch_size, num_parameters=0):
+        """Generate summary statistics"""
+        return {
+            'model_name': model_name,
+            'avg_accuracy': round(self._safe_avg(self.accuracy_values), 2),
+            'avg_cpu_freq_mhz': self.system_info['cpu_freq_mhz'],
+            'avg_cpu_usage_percent': round(self._safe_avg(self.cpu_usage_values), 2),
+            'avg_gpu_freq_mhz': 0,  # Not easily available
+            'avg_gpu_memory_usage_mb': 0,  # Would need GPU monitoring
+            'avg_gpu_usage_percent': 0,  # Would need GPU monitoring  
+            'avg_inference_time_ms': round(self._safe_avg(self.inference_times), 2),
+            'avg_memory_usage_mb': round(self._safe_avg(self.memory_usage_values), 2),
+            'batch_size': batch_size,
+            'device': self.system_info['device'],
+            'gpu_name': self.system_info['gpu_name'],
+            'num_inferences': self.total_inferences,
+            'num_parameters': num_parameters,
+            'std_accuracy': round(self._safe_std(self.accuracy_values), 2),
+            'std_inference_time_ms': round(self._safe_std(self.inference_times), 2),
+            'total_rpc_latency': round(sum(self.rpc_latencies), 4),
+            'total_throughput_mbps': round(sum(self.throughput_values), 2),
+            'rank': self.rank,
+            'hostname': self.hostname
+        }
+    
+    def write_summary_to_csv(self, model_name, batch_size, num_parameters=0):
+        """Write summary statistics to CSV (one row per run)"""
+        summary = self.generate_summary(model_name, batch_size, num_parameters)
+        
+        headers = [
+            'model_name', 'avg_accuracy', 'avg_cpu_freq_mhz', 'avg_cpu_usage_percent',
+            'avg_gpu_freq_mhz', 'avg_gpu_memory_usage_mb', 'avg_gpu_usage_percent',
+            'avg_inference_time_ms', 'avg_memory_usage_mb', 'batch_size', 'device',
+            'gpu_name', 'num_inferences', 'num_parameters', 'std_accuracy',
+            'std_inference_time_ms', 'total_rpc_latency', 'total_throughput_mbps',
+            'rank', 'hostname'
+        ]
+        
+        # Write header if file doesn't exist
+        file_exists = os.path.exists(self.csv_file)
+        with open(self.csv_file, 'a', newline='') as f:
+            writer = csv.writer(f)
+            if not file_exists:
+                writer.writerow(headers)
+            writer.writerow([summary[key] for key in headers])
+    
+    def get_summary_data(self, model_name, batch_size, num_parameters=0):
+        """Return summary data for merging"""
+        return self.generate_summary(model_name, batch_size, num_parameters)
+    
+    def merge_worker_summaries(self, worker_summaries):
+        """Merge worker summary data into master CSV"""
+        if not worker_summaries:
+            return
+            
+        headers = [
+            'model_name', 'avg_accuracy', 'avg_cpu_freq_mhz', 'avg_cpu_usage_percent',
+            'avg_gpu_freq_mhz', 'avg_gpu_memory_usage_mb', 'avg_gpu_usage_percent',
+            'avg_inference_time_ms', 'avg_memory_usage_mb', 'batch_size', 'device',
+            'gpu_name', 'num_inferences', 'num_parameters', 'std_accuracy',
+            'std_inference_time_ms', 'total_rpc_latency', 'total_throughput_mbps',
+            'rank', 'hostname'  
+        ]
+        
+        # Check if file exists and has headers
+        file_exists = os.path.exists(self.csv_file)
+        has_headers = False
+        if file_exists:
+            with open(self.csv_file, 'r') as f:
+                first_line = f.readline().strip()
+                has_headers = first_line and 'model_name' in first_line
+        
+        # Append worker summaries to master CSV
+        with open(self.csv_file, 'a', newline='') as f:
+            writer = csv.writer(f)
+            # Write headers if file doesn't exist or doesn't have headers
+            if not file_exists or not has_headers:
+                writer.writerow(headers)
+            for summary in worker_summaries:
+                writer.writerow([summary[key] for key in headers])
+        
+        logging.info(f"Merged summaries from {len(worker_summaries)} workers into {self.csv_file}")
+    
+    def finalize(self, model_name, batch_size, num_parameters=0):
+        """Write final summary and log completion"""
+        self.write_summary_to_csv(model_name, batch_size, num_parameters)
+        logging.info(f"Summary metrics saved to: {self.csv_file}")
+        logging.info(f"Total inferences processed: {self.total_inferences}")
 
 
 # split model into desired number of partitions
@@ -313,36 +349,83 @@ def split_model_into_n_shards(model: nn.Module, n: int) -> List[nn.Sequential]:
     else:
         raise ValueError(f"Unsupported model type: {type(model)}")
 
+def split_model_layers_by_proportion(model: nn.Module, r: int) -> List[nn.Sequential]:
+    if isinstance(model, torchvision_models.MobileNetV2):
+        # get list of features and classifier layers 
+        features = list(model.features.children())
+        classifier = list(model.classifier.children())
+        full_model_layers = features + classifier
+        
+        # determine index to split at 
+        split_index = (int)(len(full_model_layers) * r)
+
+        print(f"Num Layers: {len(full_model_layers)}")
+        print(f"Ratio: {r}")
+        print(f"split index: {split_index}")
+
+        # split model 
+        shard1 = nn.Sequential(*full_model_layers[:split_index])
+        shard2 = nn.Sequential(*full_model_layers[split_index:])
+        return [shard1, shard2]
+
+
+        
+def split_model_blocks_by_proportion(model: nn.Module, n: int) -> List[nn.Sequential]:
+    # TODO: I imagine we can use the list of blocks from the time_measurer code to help build this function
+    return 
 
 class ShardWrapper(nn.Module):
-    def __init__(self, submodule):
+    def __init__(self, submodule, shard_id, metrics_collector):
         super().__init__()
         self.module = submodule.to("cpu")
+        self.shard_id = shard_id
+        # Create metrics collector if None is passed (for workers)
+        if metrics_collector is None:
+            import torch.distributed.rpc as rpc
+            rank = rpc.get_worker_info().id
+            self.metrics_collector = MetricsCollector(rank)
+        else:
+            self.metrics_collector = metrics_collector
 
     def forward(self, x):  
         if not isinstance(x, torch.Tensor):
             raise TypeError(f"Expected a torch.Tensor but got {type(x)}")
 
-        logging.info(f"[{socket.gethostname()}] Received tensor with shape: {x.shape}")
+        logging.info(f"[{socket.gethostname()}] Shard {self.shard_id} received tensor with shape: {x.shape}")
 
         x = x.to("cpu")
+        
+        # Start timing
+        start_time = time.time()
+        
+        # Inference
         output = self.module(x).cpu()
+        
+        # Calculate inference time
+        inference_time = time.time() - start_time
+        
+        # Collect metrics
+        self.metrics_collector.collect_metrics(
+            inference_time=inference_time
+        )
 
-        logging.info(f"[{socket.gethostname()}] Output tensor shape: {output.shape}")
+        logging.info(f"[{socket.gethostname()}] Shard {self.shard_id} output tensor shape: {output.shape}")
         return output
 
     def parameter_rrefs(self):
         return [RRef(p) for p in self.parameters()]
 
+
 # Distributed model using pipeline parallelism
 class DistributedModel(nn.Module):
-    def __init__(self, model_type: str, num_splits: int, workers: List[str], num_classes: int = 10):
+    def __init__(self, model_type: str, split_proportion: float, workers: List[str], num_classes: int = 10, metrics_collector=None):
         super(DistributedModel, self).__init__()
-        self.num_splits = num_splits
+        self.split_proportion = split_proportion
         self.model_type = model_type
         self.workers = workers
         self.num_classes = num_classes
         self.worker_rrefs = []
+        self.metrics_collector = metrics_collector
 
         # Load and prepare model
         if model_type == "mobilenetv2":
@@ -383,25 +466,57 @@ class DistributedModel(nn.Module):
         model.eval()
 
         # Split and deploy to workers
-        self.shards = split_model_into_n_shards(model, num_splits)
+        self.shards = split_model_layers_by_proportion(model, split_proportion)
 
         for i, shard in enumerate(self.shards):
             worker_name = self.workers[i % len(self.workers)]  # round robin if num_splits > len(workers)
-            rref = rpc.remote(worker_name, ShardWrapper, args=(shard,))
+            # Pass shard_id and metrics_collector to workers
+            rref = rpc.remote(worker_name, ShardWrapper, args=(shard, i, None))  # Workers will create their own metrics_collector
             self.worker_rrefs.append(rref)
     
-    def forward(self, x):
+    def forward(self, x, batch_id=None):
         x_rref = x
+        
+        # Start timing for end-to-end batch processing
+        batch_start_time = time.time()
+        
         for i, shard_rref in enumerate(self.worker_rrefs):
             logging.info(f"Sending tensor to shard {i} on worker {self.workers[i % len(self.workers)]}")
+            
+            # Measure RPC latency
+            rpc_start_time = time.time()
             x_rref = shard_rref.rpc_sync().forward(x_rref)
+            rpc_latency = time.time() - rpc_start_time
+            
+            # Calculate data transfer size (rough estimate)
+            if isinstance(x_rref, torch.Tensor):
+                data_size_bytes = x_rref.numel() * x_rref.element_size()
+                throughput_mbps = (data_size_bytes / (1024*1024)) / rpc_latency if rpc_latency > 0 else 0
+            else:
+                data_size_bytes = None
+                throughput_mbps = None
+            
+            # Collect RPC metrics
+            if self.metrics_collector:
+                self.metrics_collector.collect_metrics(
+                    rpc_latency=rpc_latency,
+                    network_throughput_mbps=throughput_mbps
+                )
             
             # Stop passing to next shard if it's the last
             if i == len(self.worker_rrefs) - 1:
                 break
 
-        return x_rref  # x_rref is now just a Tensor, not an RRef
+        # Calculate total batch time
+        batch_total_time = time.time() - batch_start_time
+        
+        # Collect batch-level metrics on master
+        if self.metrics_collector:
+            self.metrics_collector.collect_metrics(
+                inference_time=batch_total_time
+            )
 
+        return x_rref  # x_rref is now just a Tensor, not an RRef
         
     def parameter_rrefs(self):
         remote_params = []
@@ -409,12 +524,33 @@ class DistributedModel(nn.Module):
             remote_params.extend(rref.remote().parameter_rrefs().to_here())
         return remote_params
 
-def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, num_classes, dataset, num_test_samples, model, num_splits):
+
+# Global metrics collector for RPC access
+global_metrics_collector = None
+
+def collect_worker_summary(model_name, batch_size, num_parameters=0):
+    """RPC method for master to collect summary from workers"""
+    global global_metrics_collector
+    if global_metrics_collector:
+        return global_metrics_collector.get_summary_data(model_name, batch_size, num_parameters)
+    return {}
+
+def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, num_classes, dataset, num_test_samples, split_proportion, metrics_dir):
     """
-    Main function to run distributed inference
+    Main function to run distributed inference with metrics collection
     """
 
     connected = True
+    
+    # Initialize metrics collector
+    metrics_collector = MetricsCollector(rank, metrics_dir)
+    
+    # Make metrics collector globally accessible for RPC
+    global global_metrics_collector
+    global_metrics_collector = metrics_collector
+    
+    # Record start of process - just collect system metrics
+    metrics_collector.collect_metrics()
 
     # Add hostname to log formatter
     hostname = socket.gethostname()
@@ -425,6 +561,12 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
         record.rank = rank
         return record
     logging.setLogRecordFactory(record_factory)
+    
+    # Update logging format to include hostname and rank
+    for handler in logging.root.handlers:
+        handler.setFormatter(logging.Formatter(
+            '%(asctime)s - %(levelname)s - %(message)s [%(hostname)s:rank%(rank)s]'
+        ))
     
     logger = logging.getLogger(__name__)
     logger.info("Starting distributed inference process")
@@ -478,6 +620,9 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
             logger.info("Master RPC initialized successfully")
             rpc_initialized = True
             
+            # Record RPC initialization
+            metrics_collector.collect_metrics()
+            
             # Define worker names
             workers = [f"worker{i}" for i in range(1, world_size)]
             logger.info(f"Setting up model with workers: {workers}")
@@ -485,11 +630,15 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
             # Create distributed model
             model = DistributedModel(
                 model_type=model_type,
-                num_splits=num_splits,
+                split_proportion=split_proportion,
                 workers=workers,
-                num_classes=num_classes
+                num_classes=num_classes,
+                metrics_collector=metrics_collector
             )
             logger.info("Distributed model created successfully")
+            
+            # Record model setup  
+            metrics_collector.collect_metrics()
             
             # Load data
             logger.info(f"Loading {dataset} dataset")
@@ -499,9 +648,8 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
                     transforms.Resize(resize_dim),
                     transforms.ToTensor(),
                     transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
-])
+                ])
 
-                
                 dataset_path = "/export/datasets/cifar10"
                 logger.info(f"Loading CIFAR-10 from: {dataset_path}")
                 
@@ -522,6 +670,9 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
             else:
                 images = torch.randn(batch_size, 3, 224, 224)
                 logger.info(f"Using dummy data with shape: {images.shape}")
+            
+            # Record data loading
+            metrics_collector.collect_metrics()
             
             # Run inference
             logger.info("Starting inference...")
@@ -544,10 +695,9 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
                         labels = labels[:remaining]
 
                     logger.info(f"Running inference on batch {i+1}/{num_batches} with shape: {images.shape}")
-                    batch_start_time = time.time()
-                    output = model(images)
-                    batch_total_time = time.time() - batch_start_time
-                    logger.info(f"End to end time for batch {i}: {batch_total_time}")
+                    
+                    # Run inference with batch tracking
+                    output = model(images, batch_id=i)
 
                     logger.info(f"Received output shape: {output.shape}")
 
@@ -556,20 +706,58 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
                     logger.info(f"Predicted: {predicted[:5]} | Actual: {labels[:5]}")
 
                     num_correct += (predicted == labels).sum().item()
-
                     total_images += len(images)
+                    
+                    # Calculate batch accuracy
+                    batch_accuracy = (predicted == labels).sum().item() / len(labels) * 100.0
+                    
+                    # Record batch results
+                    metrics_collector.collect_metrics(
+                        accuracy=batch_accuracy,
+                        total_images=len(images)
+                    )
 
             elapsed_time = time.time() - start_time
-            logger.info(f"Inference completed on {total_images} images.")
-            logger.info(f"Final Accuracy: {1.0 * num_correct / total_images * 100.0}") 
+            final_accuracy = 1.0 * num_correct / total_images * 100.0
             
+            logger.info(f"Inference completed on {total_images} images.")
+            logger.info(f"Final Accuracy: {final_accuracy}") 
             logger.info(f"Inference completed in {elapsed_time:.4f} seconds")
             
-            # Print some results
-            if dataset == 'cifar10':
-                _, predicted = torch.max(output.data, 1)
-                logger.info(f"First few predictions: {predicted[:5]}")
-                logger.info(f"First few actual labels: {labels[:5]}")
+            # Record final results
+            metrics_collector.collect_metrics(
+                accuracy=final_accuracy,
+                inference_time=elapsed_time
+            )
+            
+            # Print final results summary
+            logger.info(f"Final results summary:")
+            logger.info(f"  Total images processed: {total_images}")
+            logger.info(f"  Overall accuracy: {final_accuracy:.2f}%")
+            logger.info(f"  Total inference time: {elapsed_time:.4f} seconds")
+            logger.info(f"  Average time per image: {elapsed_time/total_images:.4f} seconds")
+            
+            # Collect summaries from all workers after inference is complete
+            logger.info("Collecting summary metrics from workers...")
+            worker_summaries = []
+            
+            # Get model parameter count for summary
+            num_parameters = sum(p.numel() for p in model.parameters())
+            
+            for i in range(1, world_size):  # Skip rank 0 (master)
+                worker_name = f"worker{i}"
+                try:
+                    worker_summary = rpc.rpc_sync(worker_name, collect_worker_summary, 
+                                                args=(model_type, batch_size, num_parameters))
+                    worker_summaries.append(worker_summary)
+                    logger.info(f"Collected summary from {worker_name}")
+                except Exception as e:
+                    logger.warning(f"Failed to collect summary from {worker_name}: {e}")
+            
+            # Merge all worker summaries into master's CSV
+            if worker_summaries:
+                metrics_collector.merge_worker_summaries(worker_summaries)
+                logger.info("Successfully merged all worker summaries into master CSV")
             
         except Exception as e:
             logger.error(f"Error in master node: {str(e)}", exc_info=True)
@@ -598,12 +786,7 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
                 
                 logger.info(f"Worker {rank} attempt {retry_count+1} to connect to master...")
                 
-                # Check if RPC is already initialized; if so, skip reinitialization
-                if hasattr(rpc, 'is_initialized') and rpc.is_initialized():
-                    logger.info("RPC is already initialized; skipping reinitialization.")
-                    connected = True
-                    rpc_initialized = True
-                    break
+                # Skip RPC initialization check since it doesn't exist
                 
                 rpc.init_rpc(
                     f"worker{rank}",
@@ -615,9 +798,13 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
                 connected = True
                 rpc_initialized = True
                 
+                # Record successful connection
+                metrics_collector.collect_metrics()
+                
             except Exception as e:
                 retry_count += 1
                 logger.warning(f"Connection attempt {retry_count} failed: {str(e)}")
+                
                 if retry_count >= max_retries:
                     logger.error(f"Worker {rank} failed to connect after {max_retries} attempts")
                     break  # Exit the loop instead of raising
@@ -640,10 +827,19 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
             logger.error(f"Error during shutdown: {str(e)}")
     else:
         logger.warning("RPC was never successfully initialized, skipping shutdown")
+    
+    # Finalize metrics collection with summary
+    # Get model parameter count if we have a model
+    num_parameters = 0
+    if rank == 0 and 'model' in locals():
+        num_parameters = sum(p.numel() for p in model.parameters())
+    
+    metrics_collector.finalize(model_type, batch_size, num_parameters)
+
 
 def main():
     # Parse command line arguments
-    parser = argparse.ArgumentParser(description="Distributed DNN Inference on Raspberry Pi")
+    parser = argparse.ArgumentParser(description="Distributed DNN Inference on Raspberry Pi with Metrics")
     parser.add_argument("--rank", type=int, default=0, help="Rank of current process")
     parser.add_argument("--world-size", type=int, default=3, help="World size (1 master + N workers)")
     parser.add_argument("--model", type=str, default="mobilenetv2", 
@@ -656,9 +852,8 @@ def main():
                         choices=["cifar10", "dummy"],
                         help="Dataset to use for inference")
     parser.add_argument("--num-test-samples", type=int, default=10, help="Number of images to test on during inference")
-    parser.add_argument("--num-partitions", type=int, default=2, help="Number of partitions to split the model into")
-
-
+    parser.add_argument("--split-proportion", type=float, default=0.5, help="Proportion of model to split at into 2 shards")
+    parser.add_argument("--metrics-dir", type=str, default="./metrics", help="Directory to save metrics CSV files")
     
     args = parser.parse_args()
     
@@ -672,9 +867,10 @@ def main():
         num_classes=args.num_classes,
         dataset=args.dataset,
         num_test_samples=args.num_test_samples,
-        model=args.model,
-        num_splits=args.num_partitions,
+        split_proportion=args.split_proportion,
+        metrics_dir=args.metrics_dir,
     )
+
 
 if __name__ == "__main__":
     main()

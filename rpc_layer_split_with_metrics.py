@@ -349,30 +349,6 @@ def split_model_into_n_shards(model: nn.Module, n: int) -> List[nn.Sequential]:
     else:
         raise ValueError(f"Unsupported model type: {type(model)}")
 
-def split_model_layers_by_proportion(model: nn.Module, r: int) -> List[nn.Sequential]:
-    if isinstance(model, torchvision_models.MobileNetV2):
-        # get list of features and classifier layers 
-        features = list(model.features.children())
-        classifier = list(model.classifier.children())
-        full_model_layers = features + classifier
-        
-        # determine index to split at 
-        split_index = (int)(len(full_model_layers) * r)
-
-        print(f"Num Layers: {len(full_model_layers)}")
-        print(f"Ratio: {r}")
-        print(f"split index: {split_index}")
-
-        # split model 
-        shard1 = nn.Sequential(*full_model_layers[:split_index])
-        shard2 = nn.Sequential(*full_model_layers[split_index:])
-        return [shard1, shard2]
-
-
-        
-def split_model_blocks_by_proportion(model: nn.Module, n: int) -> List[nn.Sequential]:
-    # TODO: I imagine we can use the list of blocks from the time_measurer code to help build this function
-    return 
 
 class ShardWrapper(nn.Module):
     def __init__(self, submodule, shard_id, metrics_collector):
@@ -418,9 +394,9 @@ class ShardWrapper(nn.Module):
 
 # Distributed model using pipeline parallelism
 class DistributedModel(nn.Module):
-    def __init__(self, model_type: str, split_proportion: float, workers: List[str], num_classes: int = 10, metrics_collector=None):
+    def __init__(self, model_type: str, num_splits: int, workers: List[str], num_classes: int = 10, metrics_collector=None):
         super(DistributedModel, self).__init__()
-        self.split_proportion = split_proportion
+        self.num_splits = num_splits
         self.model_type = model_type
         self.workers = workers
         self.num_classes = num_classes
@@ -466,7 +442,7 @@ class DistributedModel(nn.Module):
         model.eval()
 
         # Split and deploy to workers
-        self.shards = split_model_layers_by_proportion(model, split_proportion)
+        self.shards = split_model_into_n_shards(model, num_splits)
 
         for i, shard in enumerate(self.shards):
             worker_name = self.workers[i % len(self.workers)]  # round robin if num_splits > len(workers)
@@ -535,7 +511,7 @@ def collect_worker_summary(model_name, batch_size, num_parameters=0):
         return global_metrics_collector.get_summary_data(model_name, batch_size, num_parameters)
     return {}
 
-def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, num_classes, dataset, num_test_samples, split_proportion, metrics_dir):
+def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, num_classes, dataset, num_test_samples, model, num_splits, metrics_dir):
     """
     Main function to run distributed inference with metrics collection
     """
@@ -630,7 +606,7 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
             # Create distributed model
             model = DistributedModel(
                 model_type=model_type,
-                split_proportion=split_proportion,
+                num_splits=num_splits,
                 workers=workers,
                 num_classes=num_classes,
                 metrics_collector=metrics_collector
@@ -852,7 +828,7 @@ def main():
                         choices=["cifar10", "dummy"],
                         help="Dataset to use for inference")
     parser.add_argument("--num-test-samples", type=int, default=10, help="Number of images to test on during inference")
-    parser.add_argument("--split-proportion", type=float, default=0.5, help="Proportion of model to split at into 2 shards")
+    parser.add_argument("--num-partitions", type=int, default=2, help="Number of partitions to split the model into")
     parser.add_argument("--metrics-dir", type=str, default="./metrics", help="Directory to save metrics CSV files")
     
     args = parser.parse_args()
@@ -867,7 +843,8 @@ def main():
         num_classes=args.num_classes,
         dataset=args.dataset,
         num_test_samples=args.num_test_samples,
-        split_proportion=args.split_proportion,
+        model=None,  # Remove duplicate parameter
+        num_splits=args.num_partitions,
         metrics_dir=args.metrics_dir,
     )
 
