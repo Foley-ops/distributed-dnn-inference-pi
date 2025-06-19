@@ -364,8 +364,13 @@ def split_model_layers_by_proportion(model: nn.Module, r: int) -> List[nn.Sequen
         print(f"split index: {split_index}")
 
         # split model 
+        #shard1 = nn.Sequential(*full_model_layers[:split_index])
+        #shard2 = nn.Sequential(*full_model_layers[split_index:])
+
+        interlude = [nn.AdaptiveAvgPool2d((1, 1)), nn.Flatten()]
         shard1 = nn.Sequential(*full_model_layers[:split_index])
-        shard2 = nn.Sequential(*full_model_layers[split_index:])
+        shard2 = nn.Sequential(*interlude, *full_model_layers[split_index:])
+
         return [shard1, shard2]
 
 
