@@ -349,7 +349,7 @@ def split_model_into_n_shards(model: nn.Module, n: int) -> List[nn.Sequential]:
     else:
         raise ValueError(f"Unsupported model type: {type(model)}")
 
-def split_model_layers_by_proportion((model: nn.Module, r: float) -> List[nn.Sequential]):
+def split_model_layers_by_proportion(model: nn.Module, n: int) -> List[nn.Sequential]:
     if isinstance(model, torchvision_models.MobileNetV2):
         # get list of features and classifier layers 
         features = list(model.features.children())
@@ -370,7 +370,7 @@ def split_model_layers_by_proportion((model: nn.Module, r: float) -> List[nn.Seq
 
 
         
-def split_model_blocks_by_proportion((model: nn.Module, r: float) -> List[nn.Sequential]):
+def split_model_blocks_by_proportion(model: nn.Module, n: int) -> List[nn.Sequential]:
     # TODO: I imagine we can use the list of blocks from the time_measurer code to help build this function
     return 
 
@@ -535,7 +535,7 @@ def collect_worker_summary(model_name, batch_size, num_parameters=0):
         return global_metrics_collector.get_summary_data(model_name, batch_size, num_parameters)
     return {}
 
-def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, num_classes, dataset, num_test_samples, model, num_splits, metrics_dir):
+def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, num_classes, dataset, num_test_samples, split_proportion, metrics_dir):
     """
     Main function to run distributed inference with metrics collection
     """
@@ -852,7 +852,7 @@ def main():
                         choices=["cifar10", "dummy"],
                         help="Dataset to use for inference")
     parser.add_argument("--num-test-samples", type=int, default=10, help="Number of images to test on during inference")
-    parser.add_argument("--split-proportion", type=int, default=0.5, help="Proportion of model to split at into 2 shards")
+    parser.add_argument("--split-proportion", type=float, default=0.5, help="Proportion of model to split at into 2 shards")
     parser.add_argument("--metrics-dir", type=str, default="./metrics", help="Directory to save metrics CSV files")
     
     args = parser.parse_args()
