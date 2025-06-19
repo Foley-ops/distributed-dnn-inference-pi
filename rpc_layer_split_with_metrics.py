@@ -349,7 +349,7 @@ def split_model_into_n_shards(model: nn.Module, n: int) -> List[nn.Sequential]:
     else:
         raise ValueError(f"Unsupported model type: {type(model)}")
 
-def split_model_layers_by_proportion(model: nn.Module, n: int) -> List[nn.Sequential]:
+def split_model_layers_by_proportion(model: nn.Module, r: int) -> List[nn.Sequential]:
     if isinstance(model, torchvision_models.MobileNetV2):
         # get list of features and classifier layers 
         features = list(model.features.children())
@@ -418,9 +418,9 @@ class ShardWrapper(nn.Module):
 
 # Distributed model using pipeline parallelism
 class DistributedModel(nn.Module):
-    def __init__(self, model_type: str, num_splits: int, workers: List[str], num_classes: int = 10, metrics_collector=None):
+    def __init__(self, model_type: str, split_proportion: float, workers: List[str], num_classes: int = 10, metrics_collector=None):
         super(DistributedModel, self).__init__()
-        self.num_splits = num_splits
+        self.split_proportion = split_proportion
         self.model_type = model_type
         self.workers = workers
         self.num_classes = num_classes
@@ -630,7 +630,7 @@ def run_inference(rank, world_size, model_type, batch_size, num_micro_batches, n
             # Create distributed model
             model = DistributedModel(
                 model_type=model_type,
-                num_splits=num_splits,
+                split_proportion=split_proportion,
                 workers=workers,
                 num_classes=num_classes,
                 metrics_collector=metrics_collector
